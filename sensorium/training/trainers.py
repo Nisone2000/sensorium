@@ -1,15 +1,15 @@
 from functools import partial
+
 import numpy as np
 import torch
+from nnfabrik.utility.nn_helpers import set_random_seed
+from torch.nn import KLDivLoss
 from tqdm import tqdm
 
+import wandb
 from neuralpredictors.measures import modules
-from neuralpredictors.training import (
-    early_stopping,
-    MultipleObjectiveTracker,
-    LongCycler,
-)
-from nnfabrik.utility.nn_helpers import set_random_seed
+from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
+                                       early_stopping)
 
 from ..utility import scores
 from ..utility.scores import get_correlations, get_poisson_loss
@@ -38,9 +38,20 @@ def standard_trainer(
     lr_decay_factor=0.3,
     min_lr=0.0001,
     cb=None,
+    use_wandb=True,
+    wandb_project="Rotation_test",
+    wandb_entity="ninasophie-nellen-g-ttingen-university",
+    wandb_name=None,
+    wandb_model_config=None,
+    wandb_dataset_config=None,
     track_training=False,
     detach_core=False,
-    **kwargs
+    deeplake_ds=False,
+    save_checkpoints=True,
+    checkpoint_save_path="sensorium/",
+    chpt_save_step=15,
+    include_kldivergence=True,
+    **kwargs,
 ):
     """
 
@@ -75,7 +86,7 @@ def standard_trainer(
     """
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
-
+        kldiv_loss = torch.zeros(1).to(device)
         loss_scale = (
             np.sqrt(len(dataloader[data_key].dataset) / args[0].shape[0])
             if scale_loss
@@ -84,13 +95,25 @@ def standard_trainer(
         regularizers = int(
             not detach_core
         ) * model.core.regularizer() + model.readout.regularizer(data_key)
-        return (
-            loss_scale
-            * criterion(
-                model(args[0].to(device), data_key=data_key, **kwargs),
-                args[1].to(device),
-            )
-            + regularizers
+
+        if include_kldivergence:
+            model_output = model(args[0].to(device), data_key=data_key, **kwargs)
+            # Ensure outputs are clamped to avoid log(0)
+            #epsilon = 1e-10
+            #model_output = torch.clamp(model_output, min=epsilon)
+            # Calculate KL divergence loss
+            kldiv_loss += kldiv_criterion(model_output.log(), args[1].to(device))/model_output.shape[0]
+
+#            kldiv_loss += kldiv_criterion(model_output, args[1].to(device))
+
+        tot_main_loss = loss_scale * criterion(
+            model(args[0].to(device), data_key=data_key, **kwargs),
+            args[1].to(device),
+        )
+        return (tot_main_loss + regularizers + kldiv_loss), (
+            tot_main_loss,
+            regularizers,
+            kldiv_loss,
         )
 
     ##### Model training ####################################################################################################
@@ -98,6 +121,9 @@ def standard_trainer(
     set_random_seed(seed)
     model.train()
 
+    kldiv_criterion = KLDivLoss(
+        size_average=False
+    )  # losses are summed for each minibatch
     criterion = getattr(modules, loss_function)(avg=avg_loss)
     stop_closure = partial(
         getattr(scores, stop_function),
@@ -152,6 +178,29 @@ def standard_trainer(
     else:
         tracker = None
 
+    if use_wandb:
+        # initalise wandb
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
+            name=wandb_name,
+            # Track hyperparameters and run metadata
+            config={
+                "learning_rate": lr_init,
+                "architecture": wandb_model_config,
+                "dataset": wandb_dataset_config,
+                "cur_epochs": max_iter,
+                "starting epoch": epoch,
+                "lr_decay_steps": lr_decay_steps,
+                "lr_decay_factor": lr_decay_factor,
+                "min_lr": min_lr,
+            },
+        )
+        # metrics represent any value I want to track, if they're hidden, they're not displayed on default cisualisation
+        wandb.define_metric(name="Epoch", hidden=True)
+        wandb.define_metric(name="Batch", hidden=True)
+
     # train over epochs
     for epoch, val_obj in early_stopping(
         model,
@@ -180,6 +229,11 @@ def standard_trainer(
 
         # train over batches
         optimizer.zero_grad()
+        epoch_loss = 0
+        epoch_loss_main = 0
+        epoch_loss_reg = 0
+        epoch_loss_kldiv = 0
+
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
             total=n_iterations,
@@ -188,18 +242,67 @@ def standard_trainer(
 
             batch_args = list(data)
             batch_kwargs = data._asdict() if not isinstance(data, dict) else data
-            loss = full_objective(
+            loss, loss_parts = full_objective(
                 model,
                 dataloaders["train"],
                 data_key,
                 *batch_args,
                 **batch_kwargs,
-                detach_core=detach_core
+                detach_core=detach_core,
             )
             loss.backward()
+            epoch_loss += loss.detach()
+            epoch_loss_main += loss_parts[0].detach()
+            epoch_loss_reg += loss_parts[1].detach()
+            epoch_loss_kldiv += loss_parts[2].detach()
             if (batch_no + 1) % optim_step_count == 0:
                 optimizer.step()
                 optimizer.zero_grad()
+
+            ## after - epoch-analysis
+        """if save_checkpoints:
+            if epoch % chpt_save_step == 0:
+                torch.save(
+                    model.state_dict(), f"{checkpoint_save_path}epoch_{epoch}.pth"
+                ) """
+
+        validation_correlation = get_correlations(
+            model,
+            dataloaders["validation"],
+            device=device,
+            as_dict=False,
+            per_neuron=False,
+            deeplake_ds=deeplake_ds,
+        )
+        val_loss, val_loss_parts = full_objective(
+            model,
+            dataloaders["validation"],
+            data_key,
+            *batch_args,
+            **batch_kwargs,
+            detach_core=detach_core,
+        )
+        print(
+            f"Epoch {epoch}, Batch {batch_no}, Train loss {loss}, Validation loss {val_loss}"
+        )
+        print(f"EPOCH={epoch}  validation_correlation={validation_correlation}  Epoch Train loss Kullback-Leibler-divergence={epoch_loss_kldiv}")
+
+        if use_wandb:
+            wandb_dict = {
+                "Epoch Train loss": epoch_loss,
+                "Epoch Train loss main": epoch_loss_main,
+                "Epoch Train loss regularizers": epoch_loss_reg,
+                "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
+                # "Batch": batch_no_tot,
+                "Epoch": epoch,
+                "validation_correlation": validation_correlation,
+                "Epoch validation loss": val_loss,
+                "Epoch validation loss main": val_loss_parts[0],
+                "Epoch validation loss regularizers": val_loss_parts[1],
+                "Epoch validation loss Kullback-Leibler-divergence": val_loss_parts[2],
+            }
+            wandb.log(wandb_dict)
+        model.train()
 
     ##### Model evaluation ####################################################################################################
     model.eval()
