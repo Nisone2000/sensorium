@@ -1,9 +1,11 @@
+import warnings
+from typing import Any, Callable, List, Optional
+
 from nnfabrik.utility.nn_helpers import (get_dims_for_loader_dict,
                                          set_random_seed)
 from torch import nn
 
-from neuralpredictors.layers.cores import (RotationEquivariant2dCore, SE2dCore,
-                                           Stacked2dCore)
+from neuralpredictors.layers.cores import RotationEquivariant2dCore
 from neuralpredictors.layers.encoders import FiringRateEncoder
 from neuralpredictors.layers.shifters import MLPShifter, StaticAffine2dShifter
 from neuralpredictors.utils import get_module_output
@@ -12,9 +14,10 @@ from .readouts import MultipleFullGaussian2d
 from .utility import prepare_grid
 
 
-def stacked_core_full_gauss_readout(
+def ecker_core_full_gauss_readout(
     dataloaders,
     seed,
+    optimizers_params=None,
     hidden_channels=32,
     input_kern=13,
     hidden_kern=3,
@@ -33,6 +36,7 @@ def stacked_core_full_gauss_readout(
     init_sigma=1.0,
     readout_bias=True,
     gamma_readout=4,
+    feature_reg_weight=1,
     elu_offset=0,
     stack=None,
     depth_separable=False,
@@ -48,7 +52,17 @@ def stacked_core_full_gauss_readout(
     gamma_shifter=0,
     shifter_bias=True,
     hidden_padding=None,
-    core_bias=True,
+    core_bias=False,
+    factorized=False,
+    readout_sparsity=0.0133342,  # ?
+    #     positive_spatial=False,
+    readout_normalize=True,
+    output_nonlinearity_type="elu",
+    positive_spatial=True,
+    positive_weights=False,
+    final_batchnorm_scale=False,
+    gamma_hidden=0,
+    **kwargs,
 ):
     """
     Model class of a stacked2dCore (from neuralpredictors) and a pointpooled (spatial transformer) readout
@@ -74,7 +88,7 @@ def stacked_core_full_gauss_readout(
 
     Returns: An initialized model which consists of model.core and model.readout
     """
-
+    dataloaders_initial = dataloaders.copy()
     if "train" in dataloaders.keys():
         dataloaders = dataloaders["train"]
 
@@ -93,13 +107,13 @@ def stacked_core_full_gauss_readout(
         if isinstance(input_channels, dict)
         else input_channels[0]
     )
+    print("core_input_channels=", core_input_channels)
 
     set_random_seed(seed)
-    grid_mean_predictor, grid_mean_predictor_type, source_grids = prepare_grid(
-        grid_mean_predictor, dataloaders
-    )
 
-    core = Stacked2dCore(
+    print(kwargs)
+
+    core = RotationEquivariant2dCore(
         input_channels=core_input_channels,
         hidden_channels=hidden_channels,
         input_kern=input_kern,
@@ -121,12 +135,19 @@ def stacked_core_full_gauss_readout(
         attention_conv=attention_conv,
         hidden_padding=hidden_padding,
         use_avg_reg=use_avg_reg,
+        final_batchnorm_scale=final_batchnorm_scale,
+        gamma_hidden=gamma_hidden,
+        **kwargs,
     )
 
     in_shapes_dict = {
         k: get_module_output(core, v[in_name])[1:]
         for k, v in session_shape_dict.items()
     }
+
+    grid_mean_predictor, grid_mean_predictor_type, source_grids = prepare_grid(
+        grid_mean_predictor, dataloaders
+    )
 
     readout = MultipleFullGaussian2d(
         in_shape_dict=in_shapes_dict,
@@ -136,6 +157,7 @@ def stacked_core_full_gauss_readout(
         bias=readout_bias,
         init_sigma=init_sigma,
         gamma_readout=gamma_readout,
+        feature_reg_weight=feature_reg_weight,
         gauss_type=gauss_type,
         grid_mean_predictor=grid_mean_predictor,
         grid_mean_predictor_type=grid_mean_predictor_type,
@@ -166,6 +188,7 @@ def stacked_core_full_gauss_readout(
         readout=readout,
         shifter=shifter,
         elu_offset=elu_offset,
+        nonlinearity_type=output_nonlinearity_type,
     )
 
     return model

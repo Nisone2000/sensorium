@@ -13,6 +13,9 @@ from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
 
 from ..utility import scores
 from ..utility.scores import get_correlations, get_poisson_loss
+from ..models.dec import DEC
+from sklearn.cluster import KMeans
+
 
 
 def standard_trainer(
@@ -51,6 +54,8 @@ def standard_trainer(
     checkpoint_save_path="sensorium/",
     chpt_save_step=15,
     include_kldivergence=True,
+    cluster_number =10,
+
     **kwargs,
 ):
     """
@@ -79,11 +84,26 @@ def standard_trainer(
         min_lr: minimum learning rate
         cb: whether to execute callback function
         track_training: whether to track and print out the training progress
+
+        cluster_number: Give number of clusters for DEC clustering algortihm
         **kwargs:
 
     Returns:
 
     """
+
+    
+
+    def target_distribution(batch: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of
+        Xie/Girshick/Farhadi; this is used the KL-divergence loss function.
+
+        :param batch: [batch size, number of clusters] Tensor of dtype float
+        :return: [batch size, number of clusters] Tensor of dtype float
+        """
+        weight = (batch ** 2) / torch.sum(batch, 0)
+        return (weight.t() / torch.sum(weight, 1)).t()
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
         kldiv_loss = torch.zeros(1).to(device)
@@ -96,13 +116,27 @@ def standard_trainer(
             not detach_core
         ) * model.core.regularizer() + model.readout.regularizer(data_key)
 
+        #TODO maybe remove the hidden dimensions
         if include_kldivergence:
-            model_output = model(args[0].to(device), data_key=data_key, **kwargs)
-            # Ensure outputs are clamped to avoid log(0)
-            #epsilon = 1e-10
-            #model_output = torch.clamp(model_output, min=epsilon)
-            # Calculate KL divergence loss
-            kldiv_loss += kldiv_criterion(model_output.log(), args[1].to(device))/model_output.shape[0]
+            print(model.args)
+            print('Model, args[0]', model(args[0]))
+            output = DEC(cluster_number=cluster_number, hidden_dimension=10, model_readouts=model.readouts)
+            target = target_distribution(output).detach()
+
+            if (target<= 0).any() or (output < 0).any():
+                min_target = target.min()
+                min_output = output.min()
+
+                # Determine the required shift
+                shift = max(0, -min_target.item(), -min_output.item()) + 1e-5  # A small epsilon to avoid zeros
+                shifted_targets =targets + shift
+                shifted_output = output + shift
+                targets = shifted_targets / shifted_targets.sum(dim=-1, keepdim=True)
+                output = shifted_output / shifted_output.sum(dim=-1, keepdim=True)
+
+            kldiv_loss += kldiv_criterion(output.log(), targets)/ output.shape[0]
+            #/ model_output.shape[0]
+            print('Kl loss: ', kldiv_loss)
 
 #            kldiv_loss += kldiv_criterion(model_output, args[1].to(device))
 
@@ -117,6 +151,8 @@ def standard_trainer(
         )
 
     ##### Model training ####################################################################################################
+    
+    
     model.to(device)
     set_random_seed(seed)
     model.train()
@@ -153,6 +189,43 @@ def standard_trainer(
         if loss_accum_batch_n is None
         else loss_accum_batch_n
     )
+
+    if include_kldivergence:
+        kmeans = KMeans(n_clusters=cluster_number, n_init=20)
+        model.train()
+        feature_list = []
+        actual = []
+        # form initial cluster centres
+
+        for batch_no, (data_key, data) in tqdm(
+            enumerate(LongCycler(dataloaders["train"])),
+            total=n_iterations,
+            desc="Epoch {}".format(epoch),
+        ):
+            if not model.readout:
+                print("Warning: model.readout is empty")
+            for k,readout in model.readout.items():
+                features_tensor = readout.features
+                if features_tensor is None:
+                    print(f"Warning: readout.features is None for key {k}")
+                elif features_tensor.nelement() == 0:
+                    print(f"Warning: readout.features is empty for key {k}")
+                else:
+                    feature_list.append(np.array(features_tensor.cpu().detach().squeeze().T.numpy()))
+                #feature_list.append(np.array(readout.features.cpu().detach().squeeze().T.numpy()))
+        features = np.vstack(feature_list)
+                
+        print(features.shape)
+        predicted = kmeans.fit_predict(features)
+        predicted_previous = torch.tensor(np.copy(predicted), dtype=torch.long)
+        #_, accuracy = cluster_accuracy(predicted, actual.cpu().numpy())
+        cluster_centers = torch.tensor(
+            kmeans.cluster_centers_, dtype=torch.float, requires_grad=True
+        )
+        cluster_centers = cluster_centers.to(device, non_blocking=True)
+        with torch.no_grad():
+            # initialise the cluster centers
+            model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
 
     if track_training:
         tracker_dict = dict(
@@ -200,6 +273,7 @@ def standard_trainer(
         # metrics represent any value I want to track, if they're hidden, they're not displayed on default cisualisation
         wandb.define_metric(name="Epoch", hidden=True)
         wandb.define_metric(name="Batch", hidden=True)
+
 
     # train over epochs
     for epoch, val_obj in early_stopping(
@@ -289,11 +363,11 @@ def standard_trainer(
 
         if use_wandb:
             wandb_dict = {
-                "Epoch Train loss": epoch_loss,
+                "Epoch Train loss": epoch_loss, 
                 "Epoch Train loss main": epoch_loss_main,
                 "Epoch Train loss regularizers": epoch_loss_reg,
                 "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
-                # "Batch": batch_no_tot,
+                "Batch": batch_no,
                 "Epoch": epoch,
                 "validation_correlation": validation_correlation,
                 "Epoch validation loss": val_loss,
