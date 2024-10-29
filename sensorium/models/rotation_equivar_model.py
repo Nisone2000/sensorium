@@ -57,6 +57,8 @@ def ecker_core_full_gauss_readout(
     readout_sparsity=0.0133342,  # ?
     #     positive_spatial=False,
     readout_normalize=True,
+    regularizer_type="adaptive_log_norm",
+    gamma_sigma=0.1,
     output_nonlinearity_type="elu",
     positive_spatial=True,
     positive_weights=False,
@@ -162,6 +164,8 @@ def ecker_core_full_gauss_readout(
         grid_mean_predictor=grid_mean_predictor,
         grid_mean_predictor_type=grid_mean_predictor_type,
         source_grids=source_grids,
+        regularizer_type=regularizer_type,
+        gamma_sigma =gamma_sigma,
     )
 
     if shifter is True:
