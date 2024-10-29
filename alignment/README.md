@@ -1,0 +1,2 @@
+This folder is based on "Rotation-invariant clustering of neuronal responses in primary visual cortex" 2020 paper (https://openreview.net/forum?id=rklr9kHFDB).  
+However, it requires a different environment as the code is based on the tensforflow.
