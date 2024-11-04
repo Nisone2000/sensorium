@@ -55,7 +55,7 @@ def standard_trainer(
     chpt_save_step=15,
     include_kldivergence=True,
     cluster_number =10,
-
+    alpha = 1.0,
     **kwargs,
 ):
     """
@@ -86,12 +86,19 @@ def standard_trainer(
         track_training: whether to track and print out the training progress
 
         cluster_number: Give number of clusters for DEC clustering algortihm
+        alpha: alpha used for calculation of soft assignment
         **kwargs:
 
     Returns:
 
     """
-
+    def soft_assignments(encoded_features, cluster_centers, alpha = alpha):
+        # Compute soft assingments q_ij as described in DEC paper (1)
+        print('Encoded features.shape', encoded_features.shape)
+        norm_squared = torch.sum((encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, 2)
+        assignments = 1.0 / (1.0 + (norm_squared / alpha))
+        assignments = assignments ** ((alpha + 1) / 2)
+        return assignments / torch.sum(assignments, dim=1, keepdim=True)
     
 
     def target_distribution(batch: torch.Tensor) -> torch.Tensor:
@@ -118,23 +125,20 @@ def standard_trainer(
 
         #TODO maybe remove the hidden dimensions
         if include_kldivergence:
-            print(model.args)
-            print('Model, args[0]', model(args[0]))
-            output = DEC(cluster_number=cluster_number, hidden_dimension=10, model_readouts=model.readouts)
+            output = soft_assignments(model(args[0].to(device),data_key=data_key,**kwargs),cluster_centers)
             target = target_distribution(output).detach()
-
             if (target<= 0).any() or (output < 0).any():
                 min_target = target.min()
                 min_output = output.min()
 
                 # Determine the required shift
                 shift = max(0, -min_target.item(), -min_output.item()) + 1e-5  # A small epsilon to avoid zeros
-                shifted_targets =targets + shift
+                shifted_targets =target + shift
                 shifted_output = output + shift
-                targets = shifted_targets / shifted_targets.sum(dim=-1, keepdim=True)
+                target = shifted_targets / shifted_targets.sum(dim=-1, keepdim=True)
                 output = shifted_output / shifted_output.sum(dim=-1, keepdim=True)
 
-            kldiv_loss += kldiv_criterion(output.log(), targets)/ output.shape[0]
+            kldiv_loss += kldiv_criterion(output.log(), target)/ output.shape[0]
             #/ model_output.shape[0]
             print('Kl loss: ', kldiv_loss)
 
@@ -152,7 +156,10 @@ def standard_trainer(
 
     ##### Model training ####################################################################################################
     
-    
+    '''
+    if include_kldivergence:
+        model = DEC(cluster_number=cluster_number, hidden_dimension=128, model=model)
+    '''
     model.to(device)
     set_random_seed(seed)
     model.train()
@@ -171,7 +178,12 @@ def standard_trainer(
 
     n_iterations = len(LongCycler(dataloaders["train"]))
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
+    if include_kldivergence:
+        cluster_centers = torch.zeros(cluster_number, 128, dtype=torch.float, requires_grad=True)
+        optimizer = torch.optim.Adam(list(model.parameters()) + [cluster_centers],  # Combine model params and additional tensor
+    lr=lr_init)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="max" if maximize else "min",
@@ -191,44 +203,44 @@ def standard_trainer(
     )
 
     if include_kldivergence:
+        #TODO: include hidden dimension
         kmeans = KMeans(n_clusters=cluster_number, n_init=20)
         model.train()
         feature_list = []
+        features_subset = []
         actual = []
         # form initial cluster centres
-
+        '''
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
             total=n_iterations,
             desc="Epoch {}".format(epoch),
         ):
-            if not model.readout:
-                print("Warning: model.readout is empty")
-            for k,readout in model.readout.items():
-                features_tensor = readout.features
-                if features_tensor is None:
-                    print(f"Warning: readout.features is None for key {k}")
-                elif features_tensor.nelement() == 0:
-                    print(f"Warning: readout.features is empty for key {k}")
-                else:
-                    feature_list.append(np.array(features_tensor.cpu().detach().squeeze().T.numpy()))
-                #feature_list.append(np.array(readout.features.cpu().detach().squeeze().T.numpy()))
+            batch_args = list(data)
+            batch_kwargs = data._asdict() if not isinstance(data, dict) else data
+        '''
+        for k,readout in model.readout.items():
+            features = readout.features.cpu().detach().squeeze().T.numpy()
+            feature_list.append(np.array(features))
+            #feature_list.append(np.array(readout.features.cpu().detach().squeeze().T.numpy()))
+            random_indices = np.random.choice(features.shape[0], size=int(features.shape[0]/5), replace=False)
+            features_subset.append(features[random_indices, :])
         features = np.vstack(feature_list)
-                
-        print(features.shape)
-        predicted = kmeans.fit_predict(features)
+        features_subset = np.vstack(features_subset)      
+        predicted = kmeans.fit_predict(features_subset)
         predicted_previous = torch.tensor(np.copy(predicted), dtype=torch.long)
         #_, accuracy = cluster_accuracy(predicted, actual.cpu().numpy())
         cluster_centers = torch.tensor(
             kmeans.cluster_centers_, dtype=torch.float, requires_grad=True
         )
         cluster_centers = cluster_centers.to(device, non_blocking=True)
-        with torch.no_grad():
+        
+        '''with torch.no_grad():
             # initialise the cluster centers
             model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
-
+        '''
     if track_training:
-        tracker_dict = dict(
+        tracker_dict = dict( 
             correlation=partial(
                 get_correlations,
                 model,
