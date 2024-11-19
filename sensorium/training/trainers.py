@@ -57,6 +57,7 @@ def standard_trainer(
     alpha=1.0,
     dec_starting_epoch=10,
     kmeans_init=20,
+    subsamples=2000,
     **kwargs,
 ):
     """
@@ -90,6 +91,7 @@ def standard_trainer(
         alpha: alpha used for calculation of soft assignment
         dec_starting_epoch: Epoch at which we start the initialisation for the cluster centroids for dec clustering
         kmeans_init: number of iterations for kmeans for cluster initialisation
+        subsamples: number of subsamples used for clustering
         **kwargs:
 
     Returns:
@@ -103,7 +105,9 @@ def standard_trainer(
             return base_multiplier
 
     def soft_assignments(encoded_features, cluster_centers, alpha=alpha):
-        # Compute soft assingments q_ij as described in DEC paper (1)
+        """Compute soft assingments q_ij as described in DEC paper (1)
+        q_ij = (1+ ||z_i - \mu_j||^2/a)^(-(a+1)/2) / (sum_j'((1+ ||z_i - \mu_j'||^2/a)^(-(a+1)/2)))
+        """
         norm_squared = torch.sum(
             (encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, 2
         )
@@ -115,6 +119,7 @@ def standard_trainer(
         """
         Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of
         Xie/Girshick/Farhadi; this is used the KL-divergence loss function.
+        p_ij = (q_ij^2/f_j) / sum_j'(q_ij'^2/f_j')  f_j =sum_i(q_ij)
 
         :param batch: [batch size, number of clusters] Tensor of dtype float
         :return: [batch size, number of clusters] Tensor of dtype float
@@ -163,8 +168,11 @@ def standard_trainer(
     n_iterations = len(LongCycler(dataloaders["train"]))
 
     if include_kldivergence:
+        k = list(model.readout.keys())[0]
+        dim = model.readout[k].features.shape[1]
+        dtype = model.readout[k].features.dtype
         cluster_centers = torch.zeros(
-            cluster_number, 128, dtype=torch.float, requires_grad=True
+            cluster_number, dim, dtype=dtype, requires_grad=True
         )
         optimizer = torch.optim.Adam(
             list(model.parameters())
@@ -259,35 +267,38 @@ def standard_trainer(
             kmeans = KMeans(
                 n_clusters=cluster_number, n_init=kmeans_init, random_state=seed
             )
-            model.train()
             feature_list = []
             features_subset = []
             random_indices = {}
             # form initial cluster centres
+            with torch.no_grad():
+                for k, readout in model.readout.items():
+                    features = readout.features.cpu().detach().squeeze().T.numpy()
+                    feature_list.append(np.array(features))
+                    # TODO remove subset
+                    rng = np.random.default_rng(seed)
+                    random_index = rng.choice(
+                        features.shape[0], size=int(subsamples), replace=False
+                    )
+                    random_indices[k] = random_index
+                    features_subset.append(features[random_indices[k], :])
+                features = np.vstack(feature_list)
+                features_subset = np.vstack(features_subset)
+                predicted = kmeans.fit_predict(features)
 
-            for k, readout in model.readout.items():
-                features = readout.features.cpu().detach().squeeze().T.numpy()
-                feature_list.append(np.array(features))
-                random_index = np.random.choice(
-                    features.shape[0], size=int(features.shape[0] / 5), replace=False
+                # predicted_previous = torch.tensor(np.copy(predicted), dtype=torch.long)
+                # _, accuracy = cluster_accuracy(predicted, actual.cpu().numpy())
+                cluster_centers = torch.tensor(
+                    kmeans.cluster_centers_, dtype=torch.float, requires_grad=True
                 )
-                random_indices[k] = random_index
-                features_subset.append(features[random_indices[k], :])
-            features = np.vstack(feature_list)
-            features_subset = np.vstack(features_subset)
-            predicted = kmeans.fit_predict(features)
-            # predicted_previous = torch.tensor(np.copy(predicted), dtype=torch.long)
-            # _, accuracy = cluster_accuracy(predicted, actual.cpu().numpy())
-            cluster_centers = torch.tensor(
-                kmeans.cluster_centers_, dtype=torch.float, requires_grad=True
-            )
-            cluster_centers = cluster_centers.to(device, non_blocking=True)
+                cluster_centers = cluster_centers.to(device, non_blocking=True)
 
             """with torch.no_grad():
                 # initialise the cluster centers
                 model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
             """
 
+        model.train()
         # print the quantities from tracker
         if verbose and tracker is not None:
             print("=======================================")
@@ -333,26 +344,17 @@ def standard_trainer(
                     features_subset = []
                     feature_list = []
                     for k, readout in model.readout.items():
-                        features = readout.features.detach().squeeze()
+                        features = readout.features.squeeze()
                         features_subset.append(features[:, random_indices[k]])
                         feature_list.append(features)
 
                     features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
                     output = soft_assignments(feature_list, cluster_centers)
-                    target = target_distribution(output).detach()
-                    """
-                    if (target<= 0).any() or (output < 0).any():
-                        min_target = target.min()
-                        min_output = output.min()
+                    target = target_distribution(output)
 
-                        # Determine the required shift
-                        shift = max(0, -min_target.item(), -min_output.item()) + 1e-5  # A small epsilon to avoid zeros
-                        shifted_targets =target + shift
-                        shifted_output = output + shift
-                        target = shifted_targets / shifted_targets.sum(dim=-1, keepdim=True)
-                        output = shifted_output / shifted_output.sum(dim=-1, keepdim=True)
-                    """
+                    # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
+                    # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
                     kldiv_loss = (
                         get_multiplier(epoch)
                         * kldiv_criterion(output.log(), target)
