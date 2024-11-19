@@ -41,8 +41,6 @@ def standard_trainer(
     min_lr=0.0001,
     cb=None,
     use_wandb=True,
-    wandb_project="Rotation_test",
-    wandb_entity="ninasophie-nellen-g-ttingen-university",
     wandb_name=None,
     wandb_model_config=None,
     wandb_dataset_config=None,
