@@ -2,15 +2,15 @@ from functools import partial
 
 import numpy as np
 import torch
+from neuralpredictors.measures import modules
+from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
+                                       early_stopping)
 from nnfabrik.utility.nn_helpers import set_random_seed
 from sklearn.cluster import KMeans
 from torch.nn import KLDivLoss
 from tqdm import tqdm
 
 import wandb
-from neuralpredictors.measures import modules
-from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
-                                       early_stopping)
 
 from ..models.dec import DEC
 from ..utility import scores
@@ -36,7 +36,7 @@ def standard_trainer(
     maximize=True,
     tolerance=1e-6,
     restore_best=True,
-    lr_decay_steps=3,
+    lr_decay_steps=5,
     lr_decay_factor=0.3,
     min_lr=0.0001,
     cb=None,
@@ -53,7 +53,8 @@ def standard_trainer(
     include_kldivergence=True,
     cluster_number=10,
     alpha=1.0,
-    dec_starting_epoch=10,
+    dec_starting_epoch=5,
+    dec_warumup_epoch=10,
     kmeans_init=20,
     subsamples=2000,
     **kwargs,
@@ -88,6 +89,8 @@ def standard_trainer(
         cluster_number: Give number of clusters for DEC clustering algortihm
         alpha: alpha used for calculation of soft assignment
         dec_starting_epoch: Epoch at which we start the initialisation for the cluster centroids for dec clustering
+        dec_warumup_epoch: Epoch at which we have the full regularizer for KL loss
+        base_multiplier: multiplier to get KL to same order of magnitude as Poisson loss
         kmeans_init: number of iterations for kmeans for cluster initialisation
         subsamples: number of subsamples used for clustering
         **kwargs:
@@ -96,9 +99,25 @@ def standard_trainer(
 
     """
 
-    def get_multiplier(epoch, base_multiplier=1e8):
-        if epoch < 14:
+    def get_multiplier(epoch, base_multiplier=2e5):
+        """Multiplier to scale KL loss in same order of magnitude as main loss
+        To avoid hard peek aat starting epoch we include a warm-up phase s.t. the loss can increase slower
+        """
+        if epoch < dec_starting_epoch:
             return 0
+        elif dec_warumup_epoch == dec_starting_epoch:
+            return base_multiplier
+            # We have a sharp edge at the initialisation. I try to reduce it
+            """
+            elif epoch == dec_starting_epoch+1:
+                return base_multiplier/1000 
+                """
+        elif dec_warumup_epoch + 1 >= epoch >= dec_starting_epoch + 1:
+            return (
+                base_multiplier
+                * (epoch - dec_starting_epoch)
+                / (dec_warumup_epoch - dec_starting_epoch)
+            )
         else:
             return base_multiplier
 
@@ -151,6 +170,7 @@ def standard_trainer(
     set_random_seed(seed)
     model.train()
 
+    # TODO I changed size_average to True
     kldiv_criterion = KLDivLoss(
         size_average=False
     )  # losses are summed for each minibatch
@@ -240,6 +260,7 @@ def standard_trainer(
                 "min_lr": min_lr,
             },
         )
+        wandb.run.log_code(".")
         # metrics represent any value I want to track, if they're hidden, they're not displayed on default cisualisation
         wandb.define_metric(name="Epoch", hidden=True)
         wandb.define_metric(name="Batch", hidden=True)
@@ -260,8 +281,9 @@ def standard_trainer(
         lr_decay_steps=lr_decay_steps,
     ):
 
-        if include_kldivergence and epoch == dec_starting_epoch:
+        if include_kldivergence and epoch == dec_starting_epoch + 1:
             # TODO: include hidden dimension
+            cluster_centers_list = []
             kmeans = KMeans(
                 n_clusters=cluster_number, n_init=kmeans_init, random_state=seed
             )
@@ -274,22 +296,29 @@ def standard_trainer(
                     features = readout.features.cpu().detach().squeeze().T.numpy()
                     feature_list.append(np.array(features))
                     # TODO remove subset
+                    """
                     rng = np.random.default_rng(seed)
                     random_index = rng.choice(
                         features.shape[0], size=int(subsamples), replace=False
                     )
                     random_indices[k] = random_index
                     features_subset.append(features[random_indices[k], :])
+                    """
                 features = np.vstack(feature_list)
-                features_subset = np.vstack(features_subset)
+                # features_subset = np.vstack(features_subset)
                 predicted = kmeans.fit_predict(features)
 
                 # predicted_previous = torch.tensor(np.copy(predicted), dtype=torch.long)
                 # _, accuracy = cluster_accuracy(predicted, actual.cpu().numpy())
-                cluster_centers = torch.tensor(
-                    kmeans.cluster_centers_, dtype=torch.float, requires_grad=True
-                )
-                cluster_centers = cluster_centers.to(device, non_blocking=True)
+            cluster_centers = torch.tensor(
+                kmeans.cluster_centers_, dtype=torch.float
+            )  # Convert to tensor
+            cluster_centers = cluster_centers.to(
+                device, non_blocking=True
+            )  # Move to device
+            cluster_centers = torch.nn.Parameter(
+                cluster_centers, requires_grad=True
+            )  # Wrap as Parameter
 
             """with torch.no_grad():
                 # initialise the cluster centers
@@ -313,6 +342,7 @@ def standard_trainer(
         epoch_loss_main = 0
         epoch_loss_reg = 0
         epoch_loss_kldiv = 0
+        epoch_loss_kldiv_without_scaling = 0
 
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
@@ -334,34 +364,39 @@ def standard_trainer(
             epoch_loss += loss.detach()
             epoch_loss_main += loss_parts[0].detach()
             epoch_loss_reg += loss_parts[1].detach()
-            cluster_centers_list = []
             if (batch_no + 1) % optim_step_count == 0:
                 # TODO maybe remove the hidden dimensions
-                if include_kldivergence and epoch >= dec_starting_epoch:
+                if include_kldivergence and epoch >= dec_starting_epoch + 1:
                     kldiv_loss = torch.zeros(1).to(device)
                     features_subset = []
                     feature_list = []
                     for k, readout in model.readout.items():
                         features = readout.features.squeeze()
-                        features_subset.append(features[:, random_indices[k]])
+                        # features_subset.append(features[:, random_indices[k]])
                         feature_list.append(features)
 
-                    features_subset = torch.cat(features_subset, dim=1)
+                    # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
                     output = soft_assignments(feature_list, cluster_centers)
-                    target = target_distribution(output)
+                    # detach targets to treet them as pseudolabels for clusters
+                    target = target_distribution(output).detach()
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-                    kldiv_loss = (
-                        get_multiplier(epoch)
-                        * kldiv_criterion(output.log(), target)
-                        / output.shape[0]
-                    )
+                    kldiv_loss = kldiv_criterion(output.log(), target)
                     kldiv_loss.backward()
-                    epoch_loss_kldiv += kldiv_loss.detach()
-                    epoch_loss += kldiv_loss.detach()
-                    cluster_centers_list.append(cluster_centers.cpu().detach())
+                    epoch_loss_kldiv += get_multiplier(epoch) * kldiv_loss.detach()
+                    epoch_loss_kldiv_without_scaling += kldiv_loss.detach()
+                    epoch_loss += get_multiplier(epoch) * kldiv_loss.detach()
+                    """
+                    if cluster_centers.grad is not None:
+                        print("Gradients for cluster_centers exist.")
+                        print("Gradient values:", cluster_centers.grad)
+                    else:
+                        print("No gradients for cluster_centers. Check if it is part of the computational graph.")
+                    """
+                    cluster_centers_clone = cluster_centers.clone()
+                    cluster_centers_list.append(cluster_centers_clone.cpu().detach())
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -393,8 +428,10 @@ def standard_trainer(
             f"Epoch {epoch}, Batch {batch_no}, Train loss {loss}, Validation loss {val_loss}"
         )
         print(
-            f"EPOCH={epoch}  validation_correlation={validation_correlation}  Epoch Train loss Kullback-Leibler-divergence={epoch_loss_kldiv}"
+            f"EPOCH={epoch}  validation_correlation={validation_correlation}  Epoch Train loss Kullback-Leibler-divergence={epoch_loss_kldiv_without_scaling}"
         )
+        if epoch >= dec_starting_epoch:
+            print(f"cluster centroids: {cluster_centers}")
 
         if use_wandb:
             wandb_dict = {
@@ -402,12 +439,14 @@ def standard_trainer(
                 "Epoch Train loss main": epoch_loss_main,
                 "Epoch Train loss regularizers": epoch_loss_reg,
                 "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
+                "Epoch Train loss KL without scaling": epoch_loss_kldiv_without_scaling,
                 "Batch": batch_no,
                 "Epoch": epoch,
                 "validation_correlation": validation_correlation,
                 "Epoch validation loss": val_loss,
                 "Epoch validation loss main": val_loss_parts[0],
                 "Epoch validation loss regularizers": val_loss_parts[1],
+                "Learning rate": optimizer.param_groups[0]["lr"],
                 # "Epoch validation loss Kullback-Leibler-divergence": val_loss_parts[2],
             }
             wandb.log(wandb_dict)
@@ -422,7 +461,8 @@ def standard_trainer(
             soft_assignments_list.append(soft_assignments(features, cluster_centers))
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
-        cluster_centers_list.append(cluster_centers.cpu().detach())
+        cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
+    cluster_centers_np = np.array(cluster_centers_list)
     tracker.finalize() if track_training else None
 
     # Compute avg validation and test correlation
@@ -430,10 +470,14 @@ def standard_trainer(
         model, dataloaders["validation"], device=device, as_dict=False, per_neuron=False
     )
 
+    if use_wandb:
+        # [optional] finish the wandb run, necessary in notebooks
+        wandb.finish()
+
     # return the whole tracker output as a dict
     output = {k: v for k, v in tracker.log.items()} if track_training else {}
     output["validation_corr"] = validation_correlation
 
     score = np.mean(validation_correlation)
 
-    return score, output, cluster_centers_list, model.state_dict()
+    return score, output, cluster_centers_np, predicted, model.state_dict()
