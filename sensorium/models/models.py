@@ -28,11 +28,13 @@ def stacked_core_full_gauss_readout(
     hidden_dilation=1,
     laplace_padding=None,
     input_regularizer="LaplaceL2norm",
+    regularizer_type="adaptive_log_norm",
     use_avg_reg=False,
     init_mu_range=0.2,
     init_sigma=1.0,
     readout_bias=True,
     gamma_readout=4,
+    feature_reg_weight=10,
     elu_offset=0,
     stack=None,
     depth_separable=False,
@@ -136,10 +138,12 @@ def stacked_core_full_gauss_readout(
         bias=readout_bias,
         init_sigma=init_sigma,
         gamma_readout=gamma_readout,
+        feature_reg_weight=feature_reg_weight,
         gauss_type=gauss_type,
         grid_mean_predictor=grid_mean_predictor,
         grid_mean_predictor_type=grid_mean_predictor_type,
         source_grids=source_grids,
+        regularizer_type=regularizer_type,
     )
 
     if shifter is True:
