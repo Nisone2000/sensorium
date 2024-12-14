@@ -315,13 +315,13 @@ def standard_trainer(
                 features = np.vstack(feature_list)
                 # features_subset = np.vstack(features_subset)
                 predicted = kmeans.fit_predict(features)
-            """
-            print('Cluster centers old', cluster_centers)
+            
+            #print('Cluster centers old', cluster_centers)
             cluster_centers.data = torch.tensor(
                     kmeans.cluster_centers_, dtype=torch.float, device=device
             )
-            print('Cluster centers new: ', cluster_centers)
-           """
+            #print('Cluster centers new: ', cluster_centers)
+           
             """with torch.no_grad():
                 # initialise the cluster centers
                 model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
