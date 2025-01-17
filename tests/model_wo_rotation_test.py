@@ -20,7 +20,7 @@ from nnfabrik.utility.nn_helpers import set_random_seed
 seed = 42
 set_random_seed(seed)
 torch.cuda.is_available()
-cuda_number = 1
+cuda_number = 6
 
 torch.cuda.set_device(f"cuda:{cuda_number}")
 
@@ -71,7 +71,7 @@ model_config = {
 
 trainer_fn = "sensorium.training.standard_trainer"
 
-dec_starting_epochs = np.array([10])
+dec_starting_epochs = np.array([1])
 base_multipliers = np.array([4e3])
 cluster_numbers =  np.array([4])
 exponents = np.array([2])
@@ -83,7 +83,7 @@ for starting_epoch in dec_starting_epochs:
         for clusters in cluster_numbers:
             for exponent in exponents:
                 if include_kldivergence:
-                    path_ending = f'KL_uniform_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+                    path_ending = f'KL_EM_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
                 else:
                     path_ending = f'without_KL_sedd_{seed}'
         
@@ -108,7 +108,7 @@ for starting_epoch in dec_starting_epochs:
                     "wandb_name": f"{path_ending}",
                     "include_kldivergence": include_kldivergence,
                     "cluster_number": clusters,
-                    "use_wandb": True,
+                    "use_wandb": False,
                     "dec_starting_epoch": starting_epoch,
                     'exponent': exponent,
                 }

@@ -15,7 +15,6 @@ from tqdm import tqdm
 
 import wandb
 
-from ..models.dec import DEC
 from ..utility import scores
 from ..utility.scores import get_correlations, get_poisson_loss
 
@@ -125,7 +124,8 @@ def standard_trainer(
             )"""
 
     def soft_assignments(encoded_features, cluster_centers, alpha=alpha):
-        """Compute soft assingments q_ij as described in DEC paper (1)
+        """
+        Compute soft assingments q_ij as described in DEC paper (1)
         q_ij = (1+ ||z_i - \mu_j||^2/a)^(-(a+1)/2) / (sum_j'((1+ ||z_i - \mu_j'||^2/a)^(-(a+1)/2)))
         """
         norm_squared = torch.sum(
@@ -291,6 +291,7 @@ def standard_trainer(
                 kmeans.cluster_centers_, dtype=torch.float, device=device
             )
             print("Cluster centers new: ", cluster_centers)
+            print('Cluster centers shape', cluster_centers.shape)
 
         model.train()
         # print the quantities from tracker
@@ -345,12 +346,13 @@ def standard_trainer(
                     feature_list = torch.cat(feature_list, dim=1)
                     output = soft_assignments(feature_list, cluster_centers)
                     print('Shape of Q matrix: ', output.shape)
-                    print('column_sums for Q', torch.sum(output, dim=0))
+                    print('Row sums for Q', torch.sum(output, dim=1))
+
 
                     # detach targets to treet them as pseudolabels for clusters
                     target = target_distribution(output).detach()
                     print('Shape of P matrix: ', target.shape)
-                    print('column_sums for P ', torch.sum(target, dim=0))
+                    print('Row sums for P ', torch.sum(target, dim=1))
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
@@ -364,8 +366,15 @@ def standard_trainer(
                         get_multiplier(epoch, base_multiplier) * kldiv_loss.detach()
                     )
                     cluster_centers_list.append(cluster_centers)
+
+                    print('Feature dimension', feature_list.shape)
                     
-                    cluster_centers = torch.matmul(output.T,feature_list)
+                    cluster_centers_1 = torch.matmul(feature_list,output).T
+                    cluster_centers = torch.matmul(output.T,feature_list.T)
+
+                    print("Array1 and Array2 are equal:", torch.equal(cluster_centers_1, cluster_centers))  # True
+
+                    print('cluster centers shape', cluster_centers.shape)
                 optimizer.step()
                 optimizer.zero_grad()
 
