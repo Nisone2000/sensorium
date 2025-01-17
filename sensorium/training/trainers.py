@@ -2,15 +2,18 @@ from functools import partial
 
 import numpy as np
 import torch
+from neuralpredictors.measures import modules
+from neuralpredictors.training import (
+    LongCycler,
+    MultipleObjectiveTracker,
+    early_stopping,
+)
 from nnfabrik.utility.nn_helpers import set_random_seed
 from sklearn.cluster import KMeans
 from torch.nn import KLDivLoss
 from tqdm import tqdm
 
 import wandb
-from neuralpredictors.measures import modules
-from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
-                                       early_stopping)
 
 from ..models.dec import DEC
 from ..utility import scores
@@ -60,6 +63,7 @@ def standard_trainer(
     kmeans_init=20,
     base_multiplier=4e3,
     subsamples=2000,
+    exponent=2,
     **kwargs,
 ):
     """
@@ -96,6 +100,7 @@ def standard_trainer(
         base_multiplier: multiplier to get KL to same order of magnitude as Poisson loss
         kmeans_init: number of iterations for kmeans for cluster initialisation
         subsamples: number of subsamples used for clustering
+        exponent: The exponent for the target distribution for DEC
         **kwargs:
 
     Returns:
@@ -108,16 +113,16 @@ def standard_trainer(
         """
         if epoch < dec_starting_epoch:
             return 0
-        elif dec_warumup_epoch == dec_starting_epoch:
+        else:
             return base_multiplier
-        elif dec_warumup_epoch >= epoch >= dec_starting_epoch:
+        """elif dec_warumup_epoch == dec_starting_epoch:
+            return base_multiplier
+            elif dec_warumup_epoch >= epoch >= dec_starting_epoch:
             return (
                 base_multiplier
                 * (epoch - dec_starting_epoch)
                 / (dec_warumup_epoch - dec_starting_epoch)
-            )
-        else:
-            return base_multiplier
+            )"""
 
     def soft_assignments(encoded_features, cluster_centers, alpha=alpha):
         """Compute soft assingments q_ij as described in DEC paper (1)
@@ -130,7 +135,7 @@ def standard_trainer(
         assignments = assignments ** ((alpha + 1) / 2)
         return assignments / torch.sum(assignments, dim=1, keepdim=True)
 
-    def target_distribution(batch: torch.Tensor) -> torch.Tensor:
+    def target_distribution(batch: torch.Tensor, exponent=exponent) -> torch.Tensor:
         """
         Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of
         Xie/Girshick/Farhadi; this is used the KL-divergence loss function.
@@ -139,7 +144,7 @@ def standard_trainer(
         :param batch: [batch size, number of clusters] Tensor of dtype float
         :return: [batch size, number of clusters] Tensor of dtype float
         """
-        weight = (batch**2) / torch.sum(batch, 0)
+        weight = (batch**exponent) / torch.sum(batch, 0)
         return (weight.t() / torch.sum(weight, 1)).t()
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
@@ -187,10 +192,6 @@ def standard_trainer(
         k = list(model.readout.keys())[0]
         dim = model.readout[k].features.shape[1]
         dtype = model.readout[k].features.dtype
-        """
-        cluster_centers = torch.zeros(
-            cluster_number, dim, dtype=dtype, requires_grad=True
-        )"""
         cluster_centers = torch.nn.Parameter(
             torch.zeros(
                 cluster_number,
@@ -315,13 +316,13 @@ def standard_trainer(
                 features = np.vstack(feature_list)
                 # features_subset = np.vstack(features_subset)
                 predicted = kmeans.fit_predict(features)
-            
-            #print('Cluster centers old', cluster_centers)
+
+            print("Cluster centers old", cluster_centers)
             cluster_centers.data = torch.tensor(
-                    kmeans.cluster_centers_, dtype=torch.float, device=device
+                kmeans.cluster_centers_, dtype=torch.float, device=device
             )
-            #print('Cluster centers new: ', cluster_centers)
-           
+            print("Cluster centers new: ", cluster_centers)
+
             """with torch.no_grad():
                 # initialise the cluster centers
                 model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
@@ -381,8 +382,13 @@ def standard_trainer(
                     # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
                     output = soft_assignments(feature_list, cluster_centers)
+                    print('Shape of Q matrix: ', output.shape)
+                    print('column_sums for Q', torch.sum(output, dim=0))
+
                     # detach targets to treet them as pseudolabels for clusters
                     target = target_distribution(output).detach()
+                    print('Shape of P matrix: ', target.shape)
+                    print('column_sums for P ', torch.sum(target, dim=0))
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
@@ -415,8 +421,15 @@ def standard_trainer(
                 #    print('cluster centers updated', cluster_centers)
                 optimizer.zero_grad()
 
-            ## after - epoch-analysis
-            """
+        ll = model.core.features.layer3.norm
+        # print('model core', model.core)
+        # print(ll)
+        assert ll.affine == False
+        # assert (ll.weight == 1).all() == True
+        # assert (ll.bias == 0).all() == True
+
+        ## after - epoch-analysis
+        """
         if save_checkpoints:
             if epoch % chpt_save_step == 0:
                 torch.save(
@@ -475,7 +488,7 @@ def standard_trainer(
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
         cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
-    cluster_centers_np = np.array(cluster_centers_list)
+        cluster_centers_np = np.array(cluster_centers_list)
     tracker.finalize() if track_training else None
 
     # Compute avg validation and test correlation

@@ -1,14 +1,12 @@
 import warnings
 from typing import Any, Callable, List, Optional
 
-from nnfabrik.utility.nn_helpers import (get_dims_for_loader_dict,
-                                         set_random_seed)
-from torch import nn
-
 from neuralpredictors.layers.cores import RotationEquivariant2dCore
 from neuralpredictors.layers.encoders import FiringRateEncoder
 from neuralpredictors.layers.shifters import MLPShifter, StaticAffine2dShifter
 from neuralpredictors.utils import get_module_output
+from nnfabrik.utility.nn_helpers import get_dims_for_loader_dict, set_random_seed
+from torch import nn
 
 from .readouts import MultipleFullGaussian2d
 from .utility import prepare_grid
@@ -165,7 +163,7 @@ def ecker_core_full_gauss_readout(
         grid_mean_predictor_type=grid_mean_predictor_type,
         source_grids=source_grids,
         regularizer_type=regularizer_type,
-        gamma_sigma =gamma_sigma,
+        gamma_sigma=gamma_sigma,
     )
 
     if shifter is True:

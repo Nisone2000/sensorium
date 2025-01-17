@@ -1,10 +1,11 @@
-#code used from https://github.com/vlukiyanov/pt-dec/blob/master/ptdec/dec.py
+# code used from https://github.com/vlukiyanov/pt-dec/blob/master/ptdec/dec.py
 
+
+from typing import Optional
 
 import torch
 import torch.nn as nn
 from torch.nn import Parameter
-from typing import Optional
 
 
 class ClusterAssignment(nn.Module):
@@ -49,5 +50,5 @@ class ClusterAssignment(nn.Module):
         norm_squared = torch.sum((batch.unsqueeze(1) - self.cluster_centers) ** 2, 2)
         numerator = 1.0 / (1.0 + (norm_squared / self.alpha))
         power = float(self.alpha + 1) / 2
-        numerator = numerator ** power
+        numerator = numerator**power
         return numerator / torch.sum(numerator, dim=1, keepdim=True)
