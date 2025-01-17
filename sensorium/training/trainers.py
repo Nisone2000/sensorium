@@ -188,26 +188,7 @@ def standard_trainer(
 
     n_iterations = len(LongCycler(dataloaders["train"]))
 
-    if include_kldivergence:
-        k = list(model.readout.keys())[0]
-        dim = model.readout[k].features.shape[1]
-        dtype = model.readout[k].features.dtype
-        cluster_centers = torch.nn.Parameter(
-            torch.zeros(
-                cluster_number,
-                dim,
-                dtype=dtype,
-                device=device,
-            ),
-            requires_grad=True,
-        )  # Wrap as Parameter
-        optimizer = torch.optim.Adam(
-            list(model.parameters())
-            + [cluster_centers],  # Combine model params and additional tensor
-            lr=lr_init,
-        )
-    else:
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="max" if maximize else "min",
@@ -297,36 +278,19 @@ def standard_trainer(
                 n_clusters=cluster_number, n_init=kmeans_init, random_state=seed
             )
             feature_list = []
-            features_subset = []
-            random_indices = {}
             # form initial cluster centres
             with torch.no_grad():
                 for k, readout in model.readout.items():
                     features = readout.features.cpu().detach().squeeze().T.numpy()
                     feature_list.append(np.array(features))
-                    # TODO remove subset
-                    """
-                    rng = np.random.default_rng(seed)
-                    random_index = rng.choice(
-                        features.shape[0], size=int(subsamples), replace=False
-                    )
-                    random_indices[k] = random_index
-                    features_subset.append(features[random_indices[k], :])
-                    """
+
                 features = np.vstack(feature_list)
-                # features_subset = np.vstack(features_subset)
                 predicted = kmeans.fit_predict(features)
 
-            print("Cluster centers old", cluster_centers)
-            cluster_centers.data = torch.tensor(
+            cluster_centers = torch.tensor(
                 kmeans.cluster_centers_, dtype=torch.float, device=device
             )
             print("Cluster centers new: ", cluster_centers)
-
-            """with torch.no_grad():
-                # initialise the cluster centers
-                model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
-            """
 
         model.train()
         # print the quantities from tracker
@@ -372,11 +336,9 @@ def standard_trainer(
                 # TODO maybe remove the hidden dimensions
                 if include_kldivergence and epoch >= dec_starting_epoch:
                     kldiv_loss = torch.zeros(1).to(device)
-                    features_subset = []
                     feature_list = []
                     for k, readout in model.readout.items():
                         features = readout.features.squeeze()
-                        # features_subset.append(features[:, random_indices[k]])
                         feature_list.append(features)
 
                     # features_subset = torch.cat(features_subset, dim=1)
@@ -401,32 +363,11 @@ def standard_trainer(
                     epoch_loss += (
                         get_multiplier(epoch, base_multiplier) * kldiv_loss.detach()
                     )
-                    """
-                    if cluster_centers.grad is not None:
-                        print("Gradients for cluster_centers exist.")
-                        print("Gradient values:", cluster_centers.grad)
-                    else:
-                        print("No gradients for cluster_centers. Check if it is part of the computational graph.")
-                    """
-                    with torch.no_grad():
-                        cluster_centers_clone = cluster_centers.clone()
-                        cluster_centers_list.append(
-                            cluster_centers_clone.cpu().detach()
-                        )
-
-                # if include_kldivergence and epoch == dec_starting_epoch:
-                #    print('cluster centers old', cluster_centers)
+                    cluster_centers_list.append(cluster_centers)
+                    
+                    cluster_centers = torch.matmul(output.T,feature_list)
                 optimizer.step()
-                # if include_kldivergence and epoch == dec_starting_epoch:
-                #    print('cluster centers updated', cluster_centers)
                 optimizer.zero_grad()
-
-        ll = model.core.features.layer3.norm
-        # print('model core', model.core)
-        # print(ll)
-        assert ll.affine == False
-        # assert (ll.weight == 1).all() == True
-        # assert (ll.bias == 0).all() == True
 
         ## after - epoch-analysis
         """
@@ -487,7 +428,7 @@ def standard_trainer(
             soft_assignments_list.append(soft_assignments(features, cluster_centers))
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
-        cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
+        cluster_centers_list.append(cluster_centers)
         cluster_centers_np = np.array(cluster_centers_list)
     tracker.finalize() if track_training else None
 
