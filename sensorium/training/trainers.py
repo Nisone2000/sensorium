@@ -3,8 +3,11 @@ from functools import partial
 import numpy as np
 import torch
 from neuralpredictors.measures import modules
-from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
-                                       early_stopping)
+from neuralpredictors.training import (
+    LongCycler,
+    MultipleObjectiveTracker,
+    early_stopping,
+)
 from nnfabrik.utility.nn_helpers import set_random_seed
 from sklearn.cluster import KMeans
 from torch.nn import KLDivLoss
@@ -42,6 +45,8 @@ def standard_trainer(
     cb=None,
     use_wandb=True,
     wandb_name=None,
+    wandb_project="Rotation_test",
+    wandb_entity="ninasophie-nellen-g-ttingen-university",
     wandb_model_config=None,
     wandb_dataset_config=None,
     track_training=False,
@@ -110,14 +115,14 @@ def standard_trainer(
             return 0
         else:
             return base_multiplier
-        '''elif dec_warumup_epoch == dec_starting_epoch:
+        """elif dec_warumup_epoch == dec_starting_epoch:
             return base_multiplier
             elif dec_warumup_epoch >= epoch >= dec_starting_epoch:
             return (
                 base_multiplier
                 * (epoch - dec_starting_epoch)
                 / (dec_warumup_epoch - dec_starting_epoch)
-            )'''
+            )"""
 
     def soft_assignments(encoded_features, cluster_centers, alpha=alpha):
         """Compute soft assingments q_ij as described in DEC paper (1)
@@ -130,7 +135,7 @@ def standard_trainer(
         assignments = assignments ** ((alpha + 1) / 2)
         return assignments / torch.sum(assignments, dim=1, keepdim=True)
 
-    def target_distribution(batch: torch.Tensor,exponent=exponent) -> torch.Tensor:
+    def target_distribution(batch: torch.Tensor, exponent=exponent) -> torch.Tensor:
         """
         Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of
         Xie/Girshick/Farhadi; this is used the KL-divergence loss function.
@@ -149,7 +154,7 @@ def standard_trainer(
             else 1.0
         )
         regularizers = int(
-            not detach_core 
+            not detach_core
         ) * model.core.regularizer() + model.readout.regularizer(data_key)
 
         tot_main_loss = loss_scale * criterion(
@@ -377,8 +382,13 @@ def standard_trainer(
                     # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
                     output = soft_assignments(feature_list, cluster_centers)
+                    print('Shape of Q matrix: ', output.shape)
+                    print('column_sums for Q', torch.sum(output, dim=0))
+
                     # detach targets to treet them as pseudolabels for clusters
                     target = target_distribution(output).detach()
+                    print('Shape of P matrix: ', target.shape)
+                    print('column_sums for P ', torch.sum(target, dim=0))
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
@@ -412,11 +422,11 @@ def standard_trainer(
                 optimizer.zero_grad()
 
         ll = model.core.features.layer3.norm
-        #print('model core', model.core)
-        #print(ll)
+        # print('model core', model.core)
+        # print(ll)
         assert ll.affine == False
-        #assert (ll.weight == 1).all() == True
-        #assert (ll.bias == 0).all() == True
+        # assert (ll.weight == 1).all() == True
+        # assert (ll.bias == 0).all() == True
 
         ## after - epoch-analysis
         """

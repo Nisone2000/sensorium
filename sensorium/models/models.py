@@ -1,12 +1,13 @@
-from nnfabrik.utility.nn_helpers import (get_dims_for_loader_dict,
-                                         set_random_seed)
-from torch import nn
-
-from neuralpredictors.layers.cores import (RotationEquivariant2dCore, SE2dCore,
-                                           Stacked2dCore)
+from neuralpredictors.layers.cores import (
+    RotationEquivariant2dCore,
+    SE2dCore,
+    Stacked2dCore,
+)
 from neuralpredictors.layers.encoders import FiringRateEncoder
 from neuralpredictors.layers.shifters import MLPShifter, StaticAffine2dShifter
 from neuralpredictors.utils import get_module_output
+from nnfabrik.utility.nn_helpers import get_dims_for_loader_dict, set_random_seed
+from torch import nn
 
 from .readouts import MultipleFullGaussian2d
 from .utility import prepare_grid
@@ -51,6 +52,7 @@ def stacked_core_full_gauss_readout(
     shifter_bias=True,
     hidden_padding=None,
     core_bias=True,
+    final_batchnorm_scale=False,
 ):
     """
     Model class of a stacked2dCore (from neuralpredictors) and a pointpooled (spatial transformer) readout
@@ -123,6 +125,7 @@ def stacked_core_full_gauss_readout(
         attention_conv=attention_conv,
         hidden_padding=hidden_padding,
         use_avg_reg=use_avg_reg,
+        final_batchnorm_scale=final_batchnorm_scale,
     )
 
     in_shapes_dict = {

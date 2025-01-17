@@ -1,4 +1,4 @@
-#code used from https://github.com/vlukiyanov/pt-dec/blob/master/ptdec/dec.py
+# code used from https://github.com/vlukiyanov/pt-dec/blob/master/ptdec/dec.py
 # and replaced DAE with the network readouts.
 
 import torch
