@@ -71,9 +71,9 @@ model_config = {
 
 trainer_fn = "sensorium.training.standard_trainer"
 
-dec_starting_epochs = np.array([1])
+dec_starting_epochs = np.array([10])
 base_multipliers = np.array([4e3])
-cluster_numbers =  np.array([4])
+cluster_numbers =  np.array([10])
 exponents = np.array([2])
 include_kldivergence=True
 
@@ -108,7 +108,7 @@ for starting_epoch in dec_starting_epochs:
                     "wandb_name": f"{path_ending}",
                     "include_kldivergence": include_kldivergence,
                     "cluster_number": clusters,
-                    "use_wandb": False,
+                    "use_wandb": True,
                     "dec_starting_epoch": starting_epoch,
                     'exponent': exponent,
                 }
