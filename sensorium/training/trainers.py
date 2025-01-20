@@ -290,8 +290,6 @@ def standard_trainer(
             cluster_centers = torch.tensor(
                 kmeans.cluster_centers_, dtype=torch.float, device=device
             )
-            print("Cluster centers new: ", cluster_centers)
-            print('Cluster centers shape', cluster_centers.shape)
 
         model.train()
         # print the quantities from tracker
@@ -351,30 +349,21 @@ def standard_trainer(
 
                     # detach targets to treet them as pseudolabels for clusters
                     target = target_distribution(output).detach()
-                    print('Shape of P matrix: ', target.shape)
-                    print('Row sums for P ', torch.sum(target, dim=1))
+                    cluster_centers_list.append(cluster_centers)
+                    cluster_centers = torch.matmul(feature_list,output).T.detach()
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
                     kldiv_loss = kldiv_criterion(output.log(), target)
                     kldiv_loss.backward()
+                    kldiv_base = kldiv_loss.detach()
                     epoch_loss_kldiv += (
-                        get_multiplier(epoch, base_multiplier) * kldiv_loss.detach()
+                        get_multiplier(epoch, base_multiplier) * kldiv_base
                     )
-                    epoch_loss_kldiv_without_scaling += kldiv_loss.detach()
+                    epoch_loss_kldiv_without_scaling += kldiv_base
                     epoch_loss += (
-                        get_multiplier(epoch, base_multiplier) * kldiv_loss.detach()
+                        get_multiplier(epoch, base_multiplier) * kldiv_base
                     )
-                    cluster_centers_list.append(cluster_centers)
-
-                    print('Feature dimension', feature_list.shape)
-                    
-                    cluster_centers_1 = torch.matmul(feature_list,output).T
-                    cluster_centers = torch.matmul(output.T,feature_list.T)
-
-                    print("Array1 and Array2 are equal:", torch.equal(cluster_centers_1, cluster_centers))  # True
-
-                    print('cluster centers shape', cluster_centers.shape)
                 optimizer.step()
                 optimizer.zero_grad()
 
