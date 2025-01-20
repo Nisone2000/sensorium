@@ -365,6 +365,19 @@ def standard_trainer(
                     cluster_centers = torch.matmul(feature_list,output).T.detach()
                 optimizer.step()
                 optimizer.zero_grad()
+                if epoch == dec_starting_epoch or epoch == dec_starting_epoch +1:
+                    if use_wandb:
+                        wandb_dict = {
+                            "Epoch Train loss": epoch_loss,
+                            "Epoch Train loss main": epoch_loss_main,
+                            "Epoch Train loss regularizers": epoch_loss_reg,
+                            "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
+                            "Epoch Train loss KL without scaling": epoch_loss_kldiv_without_scaling,
+                            "Batch": batch_no,
+                            "Epoch": epoch,
+                            "Learning rate": optimizer.param_groups[0]["lr"],
+                        }
+                        wandb.log(wandb_dict)
 
         ## after - epoch-analysis
         """

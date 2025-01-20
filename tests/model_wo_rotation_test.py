@@ -73,7 +73,7 @@ trainer_fn = "sensorium.training.standard_trainer"
 
 dec_starting_epochs = np.array([10])
 base_multipliers = np.array([4e3])
-cluster_numbers = np.array([9])
+cluster_numbers = np.array([10])
 exponents = np.array([2])
 include_kldivergence=True
 
@@ -83,7 +83,7 @@ for starting_epoch in dec_starting_epochs:
         for clusters in cluster_numbers:
             for exponent in exponents:
                 if include_kldivergence:
-                    path_ending = f'KL_EM_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+                    path_ending = f'KL_EM_batch_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
                 else:
                     path_ending = f'without_KL_sedd_{seed}'
         
