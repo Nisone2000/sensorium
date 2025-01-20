@@ -72,7 +72,7 @@ model_config = {
 trainer_fn = "sensorium.training.standard_trainer"
 
 dec_starting_epochs = np.array([10])
-base_multipliers = np.array([4e3])
+base_multipliers = np.array([4e7])
 cluster_numbers =  np.array([10])
 exponents = np.array([2])
 include_kldivergence=True
