@@ -382,13 +382,9 @@ def standard_trainer(
                     # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
                     output = soft_assignments(feature_list, cluster_centers)
-                    print('Shape of Q matrix: ', output.shape)
-                    print('column_sums for Q', torch.sum(output, dim=0))
 
                     # detach targets to treet them as pseudolabels for clusters
                     target = target_distribution(output).detach()
-                    print('Shape of P matrix: ', target.shape)
-                    print('column_sums for P ', torch.sum(target, dim=0))
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
