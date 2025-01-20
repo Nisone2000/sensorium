@@ -346,10 +346,8 @@ def standard_trainer(
                     print('Shape of Q matrix: ', output.shape)
                     print('Row sums for Q', torch.sum(output, dim=1))
 
-
-                    # detach targets to treet them as pseudolabels for clusters
-                    target = target_distribution(output).detach()
-                    cluster_centers_list.append(cluster_centers)
+                    # detach targets to treat them as pseudolabels for clusters
+                    target = target_distribution(output, exponent)
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
@@ -363,6 +361,7 @@ def standard_trainer(
                     epoch_loss += (
                         get_multiplier(epoch, base_multiplier) * kldiv_base
                     )
+                    cluster_centers_list.append(cluster_centers.cpu().detach())
                     cluster_centers = torch.matmul(feature_list,output).T.detach()
                 optimizer.step()
                 optimizer.zero_grad()
