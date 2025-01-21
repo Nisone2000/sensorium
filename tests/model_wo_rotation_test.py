@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import skimage
 import torch
+import argparse
 
 import neuralpredictors
 
@@ -16,6 +17,38 @@ warnings.filterwarnings("ignore")
 
 from nnfabrik.builder import get_data, get_model, get_trainer
 from nnfabrik.utility.nn_helpers import set_random_seed
+
+
+parser = argparse.ArgumentParser(description='File that executes model training for DEC clustering')
+
+
+## Dataset
+parser.add_argument('--seed', type=int, default=42, help='random seed (default: 0)')
+
+## GPU
+parser.add_argument('--cuda_number', type=int, default=6,
+                    help='use of cuda (default: 6)')
+
+## Training
+parser.add_argument('--starting_epoch', type=int, default=10,
+                    help='Starting epoch for KL loss (default: 10)')
+parser.add_argument('--base_multiplier', default=4e3, type=float,
+                    help='Multiplier for KL loss (default: 4e3)')
+parser.add_argument('--learning_rate', default=1e-3, type=float,
+                    help='learning rate (default: 0.001)')
+parser.add_argument('--clusters', default=10, type=int, 
+                    help='Amount of cluster centroids (default 10)')
+parser.add_argument('--exponent', default=2, type=float,
+                    help='Exponent in target distribution for DEC (default: 2)')
+parser.add_argument('--include_kldivergence', default=True, type=bool,
+                    help='Wether KL loss should be included (default: True)')
+
+## Others
+parser.add_argument('--verbose', default=0, type=int,
+                    help='print extra information at every epoch.(default: 0)')
+
+args = parser.parse_args()
+
 
 seed = 42
 set_random_seed(seed)
@@ -71,95 +104,92 @@ model_config = {
 
 trainer_fn = "sensorium.training.standard_trainer"
 
-dec_starting_epochs = np.array([10])
-base_multipliers = np.array([4e9])
-cluster_numbers = np.array([10])
-exponents = np.array([2])
-include_kldivergence=True
+starting_epoch = args.starting_epoch
+base_multiplier = args.base_multiplier
+clusters = args.clusters
+exponent = args.exponent
+include_kldivergence = args.include_kldivergence
 
+print(starting_epoch)
 
-for starting_epoch in dec_starting_epochs:
-    for base_multiplier in base_multipliers:
-        for clusters in cluster_numbers:
-            for exponent in exponents:
-                if include_kldivergence:
-                    path_ending = f'KL_uniform_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
-                else:
-                    path_ending = f'without_KL_sedd_{seed}'
-        
-                model = get_model(
-                    model_fn=model_fn,
-                    model_config=model_config,
-                    dataloaders=dataloaders,
-                    seed=seed,
-                )
+if include_kldivergence:
+    path_ending = f'KL_uniform_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+else:
+    path_ending = f'without_KL_sedd_{seed}'
 
-                trainer_config = {
-                    "max_iter": 200,
-                    "verbose": False,
-                    "lr_decay_steps": 4,
-                    "avg_loss": False,
-                    "lr_init": 0.009,
-                    "base_multiplier": base_multiplier,
-                    "device": f"cuda:{cuda_number}",
-                    "wandb_model_congfig": model_config,
-                    "wandb_dataset_config": dataset_config,
-                    "wandb_project": "Model_without_rotation",
-                    "wandb_name": f"{path_ending}",
-                    "include_kldivergence": include_kldivergence,
-                    "cluster_number": clusters,
-                    "use_wandb": True,
-                    "dec_starting_epoch": starting_epoch,
-                    'exponent': exponent,
-                }
-                if include_kldivergence:
-                    trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
-                    (
-                        validation_score,
-                        trainer_output,
-                        cluster_centers_np,
-                        predicted,
-                        state_dict,
-                    ) = trainer(model, dataloaders, seed=seed)
-                    print(cluster_centers_np)
-                    script_directory = os.path.dirname(os.path.abspath(__file__))
-                    save_path = os.path.join(
-                        script_directory,
-                        "cluster_centers",
-                        f"cluster_centers_{path_ending}.npy",
-                    )
-                    np.save(save_path, cluster_centers_np)
+model = get_model(
+    model_fn=model_fn,
+    model_config=model_config,
+    dataloaders=dataloaders,
+    seed=seed,
+)
 
-                    # Base the save path on the script's location
-                    script_directory = os.path.dirname(os.path.abspath(__file__))
-                    save_path = os.path.join(
-                        script_directory,
-                        "model_checkpoints",
-                        f"sensorium_model_dec_{path_ending}.pth",
-                    )
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                    torch.save(model.state_dict(), save_path)
+trainer_config = {
+    "max_iter": 200,
+    "verbose": False,
+    "lr_decay_steps": 4,
+    "avg_loss": False,
+    "lr_init": 0.009,
+    "base_multiplier": base_multiplier,
+    "device": f"cuda:{cuda_number}",
+    "wandb_model_congfig": model_config,
+    "wandb_dataset_config": dataset_config,
+    "wandb_project": "Model_without_rotation",
+    "wandb_name": f"{path_ending}",
+    "include_kldivergence": include_kldivergence,
+    "cluster_number": clusters,
+    "use_wandb": True,
+    "dec_starting_epoch": starting_epoch,
+    'exponent': exponent,
+}
+if include_kldivergence:
+    trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
+    (
+        validation_score,
+        trainer_output,
+        cluster_centers_np,
+        predicted,
+        state_dict,
+    ) = trainer(model, dataloaders, seed=seed)
+    print(cluster_centers_np)
+    script_directory = os.path.dirname(os.path.abspath(__file__))
+    save_path = os.path.join(
+        script_directory,
+        "cluster_centers",
+        f"cluster_centers_{path_ending}.npy",
+    )
+    np.save(save_path, cluster_centers_np)
 
-                    save_path_predicted = os.path.join(
-                        script_directory,
-                        "predictions",
-                        f"predictions_dec_{path_ending}.pt",
-                    )
-                    os.makedirs(os.path.dirname(save_path_predicted), exist_ok=True)
-                    torch.save(predicted, save_path_predicted)
-                else:
-                    trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
-                    (
-                        validation_score,
-                        trainer_output,
-                        state_dict,
-                    ) = trainer(model, dataloaders, seed=seed)
+    # Base the save path on the script's location
+    script_directory = os.path.dirname(os.path.abspath(__file__))
+    save_path = os.path.join(
+        script_directory,
+        "model_checkpoints",
+        f"sensorium_model_dec_{path_ending}.pth",
+    )
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save(model.state_dict(), save_path)
 
-                    script_directory = os.path.dirname(os.path.abspath(__file__))
-                    save_path = os.path.join(
-                        script_directory,
-                        "model_checkpoints",
-                        f"sensorium_model_dec_{path_ending}.pth",
-                    )
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                    torch.save(model.state_dict(), save_path)
+    save_path_predicted = os.path.join(
+        script_directory,
+        "predictions",
+        f"predictions_dec_{path_ending}.pt",
+    )
+    os.makedirs(os.path.dirname(save_path_predicted), exist_ok=True)
+    torch.save(predicted, save_path_predicted)
+else:
+    trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
+    (
+        validation_score,
+        trainer_output,
+        state_dict,
+    ) = trainer(model, dataloaders, seed=seed)
+
+    script_directory = os.path.dirname(os.path.abspath(__file__))
+    save_path = os.path.join(
+        script_directory,
+        "model_checkpoints",
+        f"sensorium_model_dec_{path_ending}.pth",
+    )
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save(model.state_dict(), save_path)
