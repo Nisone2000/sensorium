@@ -256,6 +256,7 @@ def standard_trainer(
         wandb.define_metric(name="Batch", hidden=True)
 
     # train over epochs
+    batch_no_total = 0
     for epoch, val_obj in early_stopping(
         model,
         stop_closure,
@@ -309,13 +310,13 @@ def standard_trainer(
         epoch_loss_reg = 0
         epoch_loss_kldiv = 0
         epoch_loss_kldiv_without_scaling = 0
-
+        
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
             total=n_iterations,
             desc="Epoch {}".format(epoch),
         ):
-
+            batch_no_total +=1
             batch_args = list(data)
             batch_kwargs = data._asdict() if not isinstance(data, dict) else data
             loss, loss_parts = full_objective(
@@ -362,23 +363,29 @@ def standard_trainer(
                         get_multiplier(epoch, base_multiplier) * kldiv_base
                     )
                     cluster_centers_list.append(cluster_centers.cpu().detach())
-                    cluster_centers = torch.matmul(feature_list,output).T.detach()
+                    # Normalize the cluster centers such that they represent the real mean of the clusters
+                    numerator = torch.matmul(feature_list,output).T.detach()
+                    denominator = torch.sum(output, dim=0, keepdim=True).T.detach()
+                    cluster_centers = numerator/denominator
+
+
                 optimizer.step()
                 optimizer.zero_grad()
-                if epoch == dec_starting_epoch or epoch == dec_starting_epoch +1:
-                    if use_wandb:
-                        wandb_dict = {
-                            "Epoch Train loss": epoch_loss,
-                            "Epoch Train loss main": epoch_loss_main,
-                            "Epoch Train loss regularizers": epoch_loss_reg,
-                            "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
-                            "Epoch Train loss KL without scaling": epoch_loss_kldiv_without_scaling,
-                            "Batch": batch_no,
-                            "Epoch": epoch,
-                            "Learning rate": optimizer.param_groups[0]["lr"],
-                        }
-                        wandb.log(wandb_dict)
-
+            '''
+            if use_wandb:
+                wandb_dict = {
+                    "Epoch Train loss": epoch_loss,
+                    "Epoch Train loss main": epoch_loss_main,
+                    "Epoch Train loss regularizers": epoch_loss_reg,
+                    "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
+                    "Epoch Train loss KL without scaling": epoch_loss_kldiv_without_scaling,
+                    "Batch": batch_no_total,
+                    "Epoch": epoch,
+                    "Learning rate": optimizer.param_groups[0]["lr"],
+                    # "Epoch validation loss Kullback-Leibler-divergence": val_loss_parts[2],
+                }
+                wandb.log(wandb_dict)
+            '''
         ## after - epoch-analysis
         """
         if save_checkpoints:
@@ -439,7 +446,7 @@ def standard_trainer(
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
         cluster_centers_list.append(cluster_centers)
-        cluster_centers_np = np.array(cluster_centers_list)
+        cluster_centers_np = np.array(cluster_centers_list.cpu())
     tracker.finalize() if track_training else None
 
     # Compute avg validation and test correlation
