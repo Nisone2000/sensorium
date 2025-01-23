@@ -64,6 +64,7 @@ def standard_trainer(
     base_multiplier=4e3,
     subsamples=2000,
     exponent=2,
+    different_lr=False,
     **kwargs,
 ):
     """
@@ -101,6 +102,7 @@ def standard_trainer(
         kmeans_init: number of iterations for kmeans for cluster initialisation
         subsamples: number of subsamples used for clustering
         exponent: The exponent for the target distribution for DEC
+        different_lr: boolean to set wether we want different learning rates for clustering and feature training
         **kwargs:
 
     Returns:
@@ -200,24 +202,45 @@ def standard_trainer(
                 device=device,
             ),
             requires_grad=True,
-        )  # Wrap as Parameter
-        optimizer = torch.optim.Adam(
+        )  
+        
+        if different_lr: 
+            optimizer = torch.optim.Adam(
+                [
+                    {"params": model.parameters(), "lr": lr_init},  # Learning rate for model parameters
+                    {"params": [cluster_centers], "lr": lr_init/2},   # Learning rate for cluster centers
+                ]
+            )
+        else:
+            optimizer = torch.optim.Adam(
             list(model.parameters())
             + [cluster_centers],  # Combine model params and additional tensor
             lr=lr_init,
-        )
+            )
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="max" if maximize else "min",
-        factor=lr_decay_factor,
-        patience=patience,
-        threshold=tolerance,
-        min_lr=min_lr,
-        verbose=verbose,
-        threshold_mode="abs",
-    )
+    if different_lr:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max" if maximize else "min",
+            factor=lr_decay_factor,
+            patience=patience,
+            threshold=tolerance,
+            min_lr=[min_lr,min_lr/2],
+            verbose=verbose,
+            threshold_mode="abs",
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max" if maximize else "min",
+            factor=lr_decay_factor,
+            patience=patience,
+            threshold=tolerance,
+            min_lr=min_lr,
+            verbose=verbose,
+            threshold_mode="abs",
+        )
 
     # set the number of iterations over which you would like to accummulate gradients
     optim_step_count = (
@@ -289,7 +312,7 @@ def standard_trainer(
         scheduler=scheduler,
         lr_decay_steps=lr_decay_steps,
     ):
-
+        model.train()
         if include_kldivergence and epoch == dec_starting_epoch:
             # TODO: include hidden dimension
             cluster_centers_list = []
@@ -328,7 +351,6 @@ def standard_trainer(
                 model.state_dict()["assignment.cluster_centers"].copy_(cluster_centers)
             """
 
-        model.train()
         # print the quantities from tracker
         if verbose and tracker is not None:
             print("=======================================")
@@ -346,6 +368,7 @@ def standard_trainer(
         epoch_loss_reg = 0
         epoch_loss_kldiv = 0
         epoch_loss_kldiv_without_scaling = 0
+        cluster_centers_grad = []
 
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
@@ -384,7 +407,7 @@ def standard_trainer(
                     output = soft_assignments(feature_list, cluster_centers)
 
                     # detach targets to treet them as pseudolabels for clusters
-                    target = target_distribution(output).detach()
+                    target = target_distribution(output)
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
@@ -397,13 +420,14 @@ def standard_trainer(
                     epoch_loss += (
                         get_multiplier(epoch, base_multiplier) * kldiv_loss.detach()
                     )
-                    """
+                    
                     if cluster_centers.grad is not None:
                         print("Gradients for cluster_centers exist.")
                         print("Gradient values:", cluster_centers.grad)
+                        cluster_centers_grad.append(cluster_centers.grad)
                     else:
                         print("No gradients for cluster_centers. Check if it is part of the computational graph.")
-                    """
+                    
                     with torch.no_grad():
                         cluster_centers_clone = cluster_centers.clone()
                         cluster_centers_list.append(
@@ -485,6 +509,10 @@ def standard_trainer(
         # append final cluster_centers
         cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
         cluster_centers_np = np.array(cluster_centers_list)
+        cluster_centers_grad_np = np.array(cluster_centers_grad.cpu())
+
+        save_path = f'/user/ninasophie.nellen/sensorium/tests/cluster_center_gradients/gradients_KL_exp_{exponent}_cluster_{cluster_number}_mult_{base_multiplier}.npy'
+        np.save(save_path, cluster_centers_grad_np)
     tracker.finalize() if track_training else None
 
     # Compute avg validation and test correlation

@@ -50,10 +50,10 @@ parser.add_argument('--verbose', default=0, type=int,
 args = parser.parse_args()
 
 
-seed = 42
+seed = args.seed
 set_random_seed(seed)
 torch.cuda.is_available()
-cuda_number = 4
+cuda_number = args.cuda_number
 
 torch.cuda.set_device(f"cuda:{cuda_number}")
 
@@ -109,13 +109,14 @@ base_multiplier = args.base_multiplier
 clusters = args.clusters
 exponent = args.exponent
 include_kldivergence = args.include_kldivergence
+different_lr = True
 
 print(starting_epoch)
 
 if include_kldivergence:
-    path_ending = f'KL_uniform_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+    path_ending = f'KL_uniform_lr_clustering_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
 else:
-    path_ending = f'without_KL_sedd_{seed}'
+    path_ending = f'without_KL_seed_{seed}'
 
 model = get_model(
     model_fn=model_fn,
@@ -141,6 +142,7 @@ trainer_config = {
     "use_wandb": True,
     "dec_starting_epoch": starting_epoch,
     'exponent': exponent,
+    'different_lr': different_lr,
 }
 if include_kldivergence:
     trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
