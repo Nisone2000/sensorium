@@ -358,13 +358,12 @@ def standard_trainer(
                     epoch_loss_kldiv_without_scaling += kldiv_loss.detach() / get_multiplier(epoch, base_multiplier)
                     epoch_loss += kldiv_loss.detach()
 
-                    with torch.no_grad:
+                    with torch.no_grad():
                         cluster_centers_list.append(cluster_centers.cpu().detach())
                     # Normalize the cluster centers such that they represent the real mean of the clusters
-                    numerator = torch.matmul(feature_list,output).T
-                    denominator = torch.sum(output, dim=0, keepdim=True).T
+                    numerator = torch.matmul(feature_list,output).T.detach()
+                    denominator = torch.sum(output, dim=0, keepdim=True).T.detach()
                     cluster_centers = numerator/denominator
-
 
                 optimizer.step()
                 optimizer.zero_grad()
