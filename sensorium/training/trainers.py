@@ -352,20 +352,17 @@ def standard_trainer(
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-                    kldiv_loss = kldiv_criterion(output.log(), target)
+                    kldiv_loss = get_multiplier(epoch, base_multiplier) * kldiv_criterion(output.log(), target)
                     kldiv_loss.backward()
-                    kldiv_base = kldiv_loss.detach()
-                    epoch_loss_kldiv += (
-                        get_multiplier(epoch, base_multiplier) * kldiv_base
-                    )
-                    epoch_loss_kldiv_without_scaling += kldiv_base
-                    epoch_loss += (
-                        get_multiplier(epoch, base_multiplier) * kldiv_base
-                    )
-                    cluster_centers_list.append(cluster_centers.cpu().detach())
+                    epoch_loss_kldiv += kldiv_loss.detach()
+                    epoch_loss_kldiv_without_scaling += kldiv_loss.detach() / get_multiplier(epoch, base_multiplier)
+                    epoch_loss += kldiv_loss.detach()
+
+                    with torch.no_grad:
+                        cluster_centers_list.append(cluster_centers.cpu().detach())
                     # Normalize the cluster centers such that they represent the real mean of the clusters
-                    numerator = torch.matmul(feature_list,output).T.detach()
-                    denominator = torch.sum(output, dim=0, keepdim=True).T.detach()
+                    numerator = torch.matmul(feature_list,output).T
+                    denominator = torch.sum(output, dim=0, keepdim=True).T
                     cluster_centers = numerator/denominator
 
 
