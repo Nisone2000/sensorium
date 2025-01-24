@@ -34,7 +34,9 @@ parser.add_argument('--starting_epoch', type=int, default=10,
                     help='Starting epoch for KL loss (default: 10)')
 parser.add_argument('--base_multiplier', default=4e3, type=float,
                     help='Multiplier for KL loss (default: 4e3)')
-parser.add_argument('--learning_rate', default=1e-3, type=float,
+parser.add_argument('--lr', default=0.009, type=float,
+                    help='learning rate (default: 0.001)')
+parser.add_argument('--lr_clustering', default=None, type=float,
                     help='learning rate (default: 0.001)')
 parser.add_argument('--clusters', default=10, type=int, 
                     help='Amount of cluster centroids (default 10)')
@@ -109,12 +111,13 @@ base_multiplier = args.base_multiplier
 clusters = args.clusters
 exponent = args.exponent
 include_kldivergence = args.include_kldivergence
-different_lr = True
+lr_clustering = args.lr_clustering
+
 
 print(starting_epoch)
 
 if include_kldivergence:
-    path_ending = f'KL_uniform_lr_clustering_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+    path_ending = f'KL_uniform_lr_clustering_{lr_clustering}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
 else:
     path_ending = f'without_KL_seed_{seed}'
 
@@ -142,7 +145,7 @@ trainer_config = {
     "use_wandb": True,
     "dec_starting_epoch": starting_epoch,
     'exponent': exponent,
-    'different_lr': different_lr,
+    'lr_clustering': lr_clustering,
 }
 if include_kldivergence:
     trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
