@@ -117,7 +117,7 @@ lr_clustering = args.lr_clustering
 print(starting_epoch)
 
 if include_kldivergence:
-    path_ending = f'KL_uniform_lr_clustering_{lr_clustering}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+    path_ending = f'KL_uniform_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
 else:
     path_ending = f'without_KL_seed_{seed}'
 

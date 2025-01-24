@@ -494,10 +494,11 @@ def standard_trainer(
         # append final cluster_centers
         cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
         cluster_centers_np = np.array(cluster_centers_list)
-        cluster_centers_grad_np = np.array(cluster_centers_grad.cpu().detach())
-
+        '''
+        cluster_centers_grad_np = np.array(cluster_centers_grad)
         save_path = f'/user/ninasophie.nellen/sensorium/tests/cluster_center_gradients/gradients_KL_exp_{exponent}_cluster_{cluster_number}_mult_{base_multiplier}.npy'
         np.save(save_path, cluster_centers_grad_np)
+        '''
     tracker.finalize() if track_training else None
 
     # Compute avg validation and test correlation
