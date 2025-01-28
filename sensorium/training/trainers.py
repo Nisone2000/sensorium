@@ -441,7 +441,7 @@ def standard_trainer(
             soft_assignments_list.append(soft_assignments(features, cluster_centers))
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
-        cluster_centers_list.append(cluster_centers)
+        cluster_centers_list.append(cluster_centers.cpu().detach())
         cluster_centers_np = np.array(cluster_centers_list)
     tracker.finalize() if track_training else None
 
