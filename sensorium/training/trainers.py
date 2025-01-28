@@ -442,7 +442,7 @@ def standard_trainer(
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
         cluster_centers_list.append(cluster_centers)
-        cluster_centers_np = np.array(cluster_centers_list.cpu())
+        cluster_centers_np = np.array(cluster_centers_list)
     tracker.finalize() if track_training else None
 
     # Compute avg validation and test correlation
