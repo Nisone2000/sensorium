@@ -168,13 +168,20 @@ def standard_trainer(
         pairwise_distances = torch.cdist(cluster_centers, cluster_centers, p=2)  # Compute pairwise distances
         pairwise_distances = torch.triu(pairwise_distances, diagonal=1)  # Keep only upper triangle (ignores diagonal)
         return torch.sum(1.0 / (pairwise_distances + epsilon)) 
+    
+    def variance_loss(cluster_centers):
+        'Regularization term to increase variance of cluster centers'
+        return -torch.var(cluster_centers, dim=0).mean() 
+    
+    def dec_loss(epoch, base_multiplier, output, target, cluster_centers):
+        kldiv_loss = get_multiplier(epoch, base_multiplier) * (kldiv_criterion(output.log(), target))
+        regularizer = get_multiplier(epoch, base_multiplier) *  variance_loss(cluster_centers)
+        return (kldiv_loss + regularizer), (kldiv_loss, regularizer)
+                   
 
     ##### Model training ####################################################################################################
 
-    """
-    if include_kldivergence:
-        model = DEC(cluster_number=cluster_number, hidden_dimension=128, model=model)
-    """
+
     model.to(device)
     set_random_seed(seed)
     model.train()
@@ -317,6 +324,7 @@ def standard_trainer(
         epoch_loss_reg = 0
         epoch_loss_kldiv = 0
         epoch_loss_kldiv_without_scaling = 0
+        epoch_kldiv_loss_regularizer = 0
         
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
@@ -359,10 +367,11 @@ def standard_trainer(
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-                    kldiv_loss = get_multiplier(epoch, base_multiplier) * (kldiv_criterion(output.log(), target)+ repulsion_loss(cluster_centers))
+                    kldiv_loss, kldiv_loss_parts = dec_loss(epoch, base_multiplier, output, target, cluster_centers)
                     kldiv_loss.backward()
                     epoch_loss_kldiv += kldiv_loss.detach()
-                    epoch_loss_kldiv_without_scaling += kldiv_loss.detach() / get_multiplier(epoch, base_multiplier)
+                    epoch_loss_kldiv_without_scaling += kldiv_loss_parts[0].detach() / get_multiplier(epoch, base_multiplier)
+                    epoch_kldiv_loss_regularizer += kldiv_loss_parts[1].detach()
                     epoch_loss += kldiv_loss.detach()
 
                     with torch.no_grad():
@@ -376,6 +385,7 @@ def standard_trainer(
                 optimizer.step()
                 optimizer.zero_grad()
             
+            '''
             if use_wandb:
                 wandb_dict = {
                     "Epoch Train loss": epoch_loss,
@@ -389,7 +399,7 @@ def standard_trainer(
                     # "Epoch validation loss Kullback-Leibler-divergence": val_loss_parts[2],
                 }
                 wandb.log(wandb_dict)
-            
+            '''
         ## after - epoch-analysis
         """
         if save_checkpoints:
@@ -427,7 +437,8 @@ def standard_trainer(
                 "Epoch Train loss main": epoch_loss_main,
                 "Epoch Train loss regularizers": epoch_loss_reg,
                 "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
-                "Epoch Train loss KL without scaling": epoch_loss_kldiv_without_scaling,
+                "Epoch Train loss KL without scaling main": epoch_loss_kldiv_without_scaling,
+                'Epoch Train loss KL regularizers': epoch_kldiv_loss_regularizer,
                 "Batch": batch_no,
                 "Epoch": epoch,
                 "validation_correlation": validation_correlation,
