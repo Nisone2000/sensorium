@@ -162,6 +162,12 @@ def standard_trainer(
             args[1].to(device),
         )
         return (tot_main_loss + regularizers), (tot_main_loss, regularizers)
+    
+    def repulsion_loss(cluster_centers, epsilon=1e-6):
+        'Regularization term that penalizes small distances between clusters'
+        pairwise_distances = torch.cdist(cluster_centers, cluster_centers, p=2)  # Compute pairwise distances
+        pairwise_distances = torch.triu(pairwise_distances, diagonal=1)  # Keep only upper triangle (ignores diagonal)
+        return torch.sum(1.0 / (pairwise_distances + epsilon)) 
 
     ##### Model training ####################################################################################################
 
@@ -257,6 +263,7 @@ def standard_trainer(
 
     # train over epochs
     batch_no_total = 0
+    kldiv_list = []
     for epoch, val_obj in early_stopping(
         model,
         stop_closure,
@@ -352,7 +359,7 @@ def standard_trainer(
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-                    kldiv_loss = get_multiplier(epoch, base_multiplier) * kldiv_criterion(output.log(), target)
+                    kldiv_loss = get_multiplier(epoch, base_multiplier) * (kldiv_criterion(output.log(), target)+ repulsion_loss(cluster_centers))
                     kldiv_loss.backward()
                     epoch_loss_kldiv += kldiv_loss.detach()
                     epoch_loss_kldiv_without_scaling += kldiv_loss.detach() / get_multiplier(epoch, base_multiplier)
@@ -360,6 +367,7 @@ def standard_trainer(
 
                     with torch.no_grad():
                         cluster_centers_list.append(cluster_centers.cpu().detach())
+                        kldiv_list.append(kldiv_loss.cpu() / get_multiplier(epoch, base_multiplier))
                     # Normalize the cluster centers such that they represent the real mean of the clusters
                     numerator = torch.matmul(feature_list,output).T.detach()
                     denominator = torch.sum(output, dim=0, keepdim=True).T.detach()
@@ -367,7 +375,7 @@ def standard_trainer(
 
                 optimizer.step()
                 optimizer.zero_grad()
-            '''
+            
             if use_wandb:
                 wandb_dict = {
                     "Epoch Train loss": epoch_loss,
@@ -381,7 +389,7 @@ def standard_trainer(
                     # "Epoch validation loss Kullback-Leibler-divergence": val_loss_parts[2],
                 }
                 wandb.log(wandb_dict)
-            '''
+            
         ## after - epoch-analysis
         """
         if save_checkpoints:
@@ -441,9 +449,11 @@ def standard_trainer(
             soft_assignments_list.append(soft_assignments(features, cluster_centers))
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
-        cluster_centers_list.append(cluster_centers.cpu().detach())
+        cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
         cluster_centers_np = np.array(cluster_centers_list)
+        kldiv_list_np = np.array(kldiv_list)
     tracker.finalize() if track_training else None
+    np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
 
     # Compute avg validation and test correlation
     validation_correlation = get_correlations(
