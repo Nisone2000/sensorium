@@ -173,7 +173,7 @@ def standard_trainer(
     
     def dec_loss(epoch, base_multiplier, output, target, cluster_centers):
         kldiv_loss = get_multiplier(epoch, base_multiplier) * (kldiv_criterion(output.log(), target))
-        regularizer = get_multiplier(epoch, base_multiplier) *  variance_loss(cluster_centers)
+        regularizer = get_multiplier(epoch, base_multiplier) *  repulsion_loss(cluster_centers)
         return (kldiv_loss + regularizer), (kldiv_loss, regularizer)
                    
 
@@ -299,6 +299,17 @@ def standard_trainer(
 
                 features = np.vstack(feature_list)
                 predicted = kmeans.fit_predict(features)
+                wcs = []
+                # caclculate within cluster variance
+                for k in range(cluster_number):
+                    cluster_points = features[predicted == k] 
+                    if cluster_points.shape[0] > 0: 
+                        wcs.append(np.mean(np.linalg.norm(cluster_points - kmeans.cluster_centers_[k], axis=1) ** 2))
+                    else:
+                        wcs.append(0)
+                wcs = np.array(wcs)
+                print("Within-Cluster Variance:", wcs)
+                np.save(f'/user/ninasophie.nellen/sensorium/tests/wcv/wcv_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', wcs)
 
             cluster_centers = torch.tensor(
                 kmeans.cluster_centers_, dtype=torch.float, device=device
@@ -462,7 +473,7 @@ def standard_trainer(
         cluster_centers_np = np.array(cluster_centers_list)
         kldiv_list_np = np.array(kldiv_list)
     tracker.finalize() if track_training else None
-    np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
+    np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_repulsion_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
 
     # Compute avg validation and test correlation
     validation_correlation = get_correlations(

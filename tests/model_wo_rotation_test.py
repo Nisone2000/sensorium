@@ -30,7 +30,7 @@ parser.add_argument('--cuda_number', type=int, default=4,
                     help='use of cuda (default: 6)')
 
 ## Training
-parser.add_argument('--starting_epoch', type=int, default=10,
+parser.add_argument('--starting_epoch', type=int, default=1,
                     help='Starting epoch for KL loss (default: 10)')
 parser.add_argument('--base_multiplier', default=4e9, type=float,
                     help='Multiplier for KL loss (default: 4e3)')
@@ -113,7 +113,7 @@ include_kldivergence = args.include_kldivergence
 
 
 if include_kldivergence:
-    path_ending = f'KL_EM_variance_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+    path_ending = f'KL_EM_repulsion_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
 else:
     path_ending = f'without_KL_sedd_{seed}'
 
