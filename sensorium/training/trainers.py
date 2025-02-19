@@ -166,7 +166,7 @@ def standard_trainer(
         print('det + const', det)
         assignments = 1.0 / (1.0 + (norm_sigma / alpha))
         assignments = (assignments ** ((alpha + p) / 2))/det
-        #print('Assignments shape', assignments.shape)
+        print('Assignments ', assignments)
         return assignments / torch.sum(assignments, dim=1, keepdim=True)
 
     def EM_t_mult(features, resp, cluster_centers, sigma, alpha, d=1):
@@ -202,29 +202,29 @@ def standard_trainer(
         (features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, dim=2
         )  
         u = (alpha + d)/(alpha +norm_squared*(taus**(-1)))  #ccalculate U shape(N,K)
-        print('u', u.shape)
-        print(resp.shape)
+        print('u', u)
+
         ''' M step '''
         numerator = torch.matmul(features,resp*u).T.detach()
-        print(numerator.shape)
+        #print(numerator.shape)
         denominator = torch.sum(resp*u, dim=0, keepdim=True).T.detach()
-        print(denominator.shape)
+        print('denom cc' , denominator)
         cluster_centers = numerator/denominator
 
         weighted_sums = torch.sum(resp* u * norm_squared, dim=0) 
         #print('WS', weighted_sums.shape)
         taus = (weighted_sums / torch.sum(resp, dim=0, keepdim=True)).detach()
-        #print('Tau', taus.shape)
+        print('Tau', taus)
         return cluster_centers, taus
 
 
-    def soft_assignments_1D(encoded_features, cluster_centers, tau, alpha=1, p=1):
+    def soft_assignments_1D(encoded_features, cluster_centers, tau, alpha=1):
         norm_squared = torch.sum(
             (encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, 2
         )
         assignments = 1.0 / (1.0 + (norm_squared / (alpha * tau)))
-        assignments = (assignments ** ((alpha + p) / 2))/(tau**1/2)
-        #print('Assignments shape', assignments.shape)
+        assignments = (assignments ** ((alpha + 1) / 2))/(tau**1/2)
+        print('Assignments ', assignments)
         return assignments / torch.sum(assignments, dim=1, keepdim=True)
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
@@ -381,7 +381,10 @@ def standard_trainer(
                     feature_list.append(np.array(features))
 
                 features = np.vstack(feature_list)
-                predicted = kmeans.fit_predict(features)
+                mean = features.mean(dim=0, keepdim=True)
+                std = features.std(dim=0, keepdim=True)
+                normalized_features = (features - mean) / (std + 1e-6)  # Add small epsilon to avoid division by zero
+                predicted = kmeans.fit_predict(normalized_features)
                 '''
                 wcs = []
                 # caclculate within cluster variance
@@ -402,7 +405,7 @@ def standard_trainer(
                 p = features.shape[1]
                 sigma = torch.zeros((cluster_number,p), device=device)
                 for k in range(cluster_number):
-                    cluster_points = torch.from_numpy(features[predicted == k]).to(device) 
+                    cluster_points = torch.from_numpy(normalized_features[predicted == k]).to(device) 
                     print(f'Points for cluster {k}: {cluster_points.shape[0]}')
                     if len(cluster_points) > 0:
                         sigma[k] = torch.var(cluster_points, dim=0, unbiased=True) +1e-6
@@ -415,8 +418,8 @@ def standard_trainer(
                     if len(cluster_points) > 0:
                         sigma[k] = torch.mean(torch.sum((cluster_points - cluster_centers[k])**2,1))
                 sigma = sigma.unsqueeze(0)
-                p=1
-            print('p',p)
+                print(sigma)
+
             if learn_alpha:
                 alpha.data = torch.tensor(1.0, dtype=torch.float, device=device)
 
@@ -472,10 +475,13 @@ def standard_trainer(
 
                     # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
+                    mean = feature_list.mean(dim=0, keepdim=True)
+                    std = feature_list.std(dim=0, keepdim=True)
+                    normalized_features = (feature_list - mean) / (std + 1e-6)  # Add small epsilon to avoid division by zero
                     if use_diag_cov:
-                        output = soft_assignments_mult(features, cluster_centers, sigma, alpha,p)
+                        output = soft_assignments_mult(normalized_features, cluster_centers, sigma, alpha,p)
                     else:
-                        output = soft_assignments_1D(features, cluster_centers, sigma, alpha,p)
+                        output = soft_assignments_1D(features, cluster_centers, sigma, alpha)
                     #print('Shape of Q matrix: ', output.shape)
                     #print('Row sums for Q', torch.sum(output, dim=1))
 
@@ -496,9 +502,9 @@ def standard_trainer(
                         kldiv_list.append(kldiv_loss.cpu() / get_multiplier(epoch, base_multiplier))
 
                     if use_diag_cov:
-                        cluster_centers, sigma = EM_t_mult(features, output, cluster_centers, sigma, alpha, p)
+                        cluster_centers, sigma = EM_t_mult(normalized_features, output, cluster_centers, sigma, alpha, p)
                     else:
-                        cluster_centers, sigma = EM_t_1D(features, output, cluster_centers, sigma, alpha, p)
+                        cluster_centers, sigma = EM_t_1D(features, output, cluster_centers, sigma, alpha)
                     # Normalize the cluster centers such that they represent the real mean of the clusters
                     '''
                     numerator = torch.matmul(feature_list,output).T.detach()
