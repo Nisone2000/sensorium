@@ -3,11 +3,8 @@ from functools import partial
 import numpy as np
 import torch
 from neuralpredictors.measures import modules
-from neuralpredictors.training import (
-    LongCycler,
-    MultipleObjectiveTracker,
-    early_stopping,
-)
+from neuralpredictors.training import (LongCycler, MultipleObjectiveTracker,
+                                       early_stopping)
 from nnfabrik.utility.nn_helpers import set_random_seed
 from sklearn.cluster import KMeans
 from torch.nn import KLDivLoss
@@ -46,13 +43,12 @@ def standard_trainer(
     wandb_name=None,
     wandb_model_config=None,
     wandb_dataset_config=None,
-    wandb_entity='ninasophie-nellen-g-ttingen-university',
-    wandb_project='Model_without_rotation',
+
     track_training=False,
     detach_core=False,
     deeplake_ds=False,
     save_checkpoints=True,
-    checkpoint_save_path="../../tests/model_checkpoints/sensorium_p_rotation_model_dec_",
+    checkpoint_save_path="../tests/model_checkpoints/sensorium_p_rotation_model_dec_",
     chpt_save_step=15,
     include_kldivergence=True,
     cluster_number=10,
@@ -63,8 +59,10 @@ def standard_trainer(
     base_multiplier=4e3,
     subsamples=2000,
     use_diag_cov=True,
-    learn_alpha=True,
+    learn_alpha=False,
     exponent=2,
+    load_pretrain=False,
+    pretrained_epoch=30,
     **kwargs,
 ):
     """
@@ -150,81 +148,132 @@ def standard_trainer(
         """
         weight = (batch**exponent) / torch.sum(batch, 0)
         return (weight.t() / torch.sum(weight, 1)).t()
-    
-    def soft_assignments_mult(encoded_features, cluster_centers, sigma, alpha=1, p=1):
-        sigma_inv = 1.0 / sigma 
-        #+1e-8 # (K,)
-        diff = (encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) #(N,K,D)
-        #print(diff.shape)
-        norm_sigma = torch.sum((diff **2 * sigma_inv),2)  
-        print('norm_sigma', norm_sigma)
-        #det = torch.sqrt(torch.prod(sigma, dim=1))
-        log_det = torch.sum(torch.log(sigma), dim=1) 
-        det = torch.exp(0.5 * log_det) 
-        print('det log ', det)
-        det = torch.sqrt(torch.prod(sigma, dim=1)) + 1e-6
-        print('det + const', det)
-        assignments = 1.0 / (1.0 + (norm_sigma / alpha))
-        assignments = (assignments ** ((alpha + p) / 2))/det
-        print('Assignments ', assignments)
-        return assignments / torch.sum(assignments, dim=1, keepdim=True)
+
+    def soft_assignments_mult(encoded_features, cluster_centers, sigma, alpha, p=1):
+        sigma_inv = 1.0 / sigma  # (K, D)
+        assert not torch.isnan(encoded_features).any(), "NaNs in encoded_features:"
+        assert not torch.isnan(cluster_centers).any(), "NaNs in cluster_centers:"
+        assert not torch.isinf(encoded_features).any(), "isinf in encoded_features:"
+        assert not torch.isinf(cluster_centers).any(), "isinf in cluster_centers:"
+        diff = encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(
+            0
+        )  # (N, K, D)
+        assert not torch.isnan(diff).any(), "NaNs in diff:"
+        assert not torch.isinf(diff).any(), "isinf in diff:"
+        # print(diff)
+        norm_sigma = torch.sum(diff * sigma_inv * diff, dim=2)  # (N, K)
+        # print('Norm sigma', norm_sigma)
+        assert not torch.isnan(norm_sigma).any(), "NaNs in norm_sigma:"
+        assert not torch.isinf(norm_sigma).any(), "isinf in norm_sigma:"
+        det = torch.sum(torch.log(sigma), dim=1)  # log(det) since sigma is diagonal
+
+        assert not torch.isnan(det).any(), "NaNs in alpha:"
+        assert not torch.isinf(det).any(), "isinf in alpha:"
+
+        # Log Gamma terms
+        log_gamma_top = torch.lgamma((alpha + p) / 2)
+        log_gamma_bottom = torch.lgamma(alpha / 2)
+
+        assert not torch.isnan(alpha).any(), "NaNs in alpha:"
+        assert not torch.isinf(alpha).any(), "isinf in alpha:"
+
+        # Log-density formula for multivariate Student-t
+        log_pdf = (
+            log_gamma_top
+            - log_gamma_bottom
+            - 0.5 * det
+            - (p / 2) * torch.log(alpha * torch.pi)
+            - ((alpha + p) / 2) * torch.log(1 + (norm_sigma / alpha))
+        )
+
+        assert not torch.isnan(log_pdf).any(), "NaNs in log_pdf:"
+        assert not torch.isinf(log_pdf).any(), "isinf in log_pdf:"
+
+        # print('log pdf' , log_pdf)
+        # print('exp(log) pdf', torch.exp(log_pdf))
+        # log_assignments = log_pdf - torch.logsumexp(log_pdf, dim=1, keepdim=True)
+        log_pdf_max = torch.max(log_pdf, dim=1, keepdim=True)[0]  # Get max per row
+
+        assert not torch.isnan(log_pdf_max).any(), "NaNs in log_pdf_max"
+        assert not torch.isinf(log_pdf_max).any(), "isinf in log_pdf_max"
+
+        assert not torch.isnan(
+            torch.logsumexp(log_pdf - log_pdf_max, dim=1, keepdim=True)
+        ).any(), "NaNs in logsumexp bracets"
+        assert not torch.isinf(
+            torch.logsumexp(log_pdf - log_pdf_max, dim=1, keepdim=True)
+        ).any(), "isinf in logsumexp bracets"
+
+        log_assignments = log_pdf - torch.logsumexp(log_pdf, dim=1, keepdim=True)
+        # print('log assignmnents ', log_assignments)
+        assert not torch.isnan(log_assignments).any(), "NaNs in log_assignments:"
+        assert not torch.isinf(log_assignments).any(), "isinf in log_assignments:"
+
+        assert not torch.isnan(
+            torch.exp(log_assignments)
+        ).any(), "NaNs in torch.exp(log_pdf):"
+        assert not torch.isinf(
+            torch.exp(log_assignments)
+        ).any(), "isinf in torch.exp(log_pdf):"
+        return torch.exp(log_assignments)  # Convert log-assignments to probabilities
 
     def EM_t_mult(features, resp, cluster_centers, sigma, alpha, d=1):
         sigma_inv = 1.0 / sigma  # (K,)
-        diff = (features.T.unsqueeze(1) - cluster_centers.unsqueeze(0))
-        norm_sigma = torch.sum((diff **2 * sigma_inv),2)  
-        u = ((alpha + d)/(alpha +norm_sigma)).detach()  #ccalculate U shape(N,K)
-        print('u', u)
-        #print(resp.shape)
-        
-        ''' M step '''
-        numerator = torch.matmul(features,resp*u).T.detach()
-        #print(numerator.shape)
-        denominator = torch.sum(resp*u, dim=0, keepdim=True).T.detach()
-        print(denominator)
-        cluster_centers = numerator/denominator
+        diff = features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)
+        norm_sigma = torch.sum((diff**2 * sigma_inv), 2)
+        u = ((alpha + d) / (alpha + norm_sigma)).detach()  # ccalculate U shape(N,K)
+        # print('u', u)
+        # print(resp.shape)
 
-        print('cluster centers', cluster_centers)
+        """ M step """
+        numerator = torch.matmul(features, resp * u).T.detach()
+        # print(numerator.shape)
+        denominator = torch.sum(resp * u, dim=0, keepdim=True).T.detach()
+        # print(denominator)
+        cluster_centers = numerator / denominator
 
-        weighted_sq_diff = resp.unsqueeze(2)* u.unsqueeze(2) * (diff ** 2)  # (N, K, D)
-        numerator = weighted_sq_diff.sum(dim=0) #(K,D)
+        # print('cluster centers', cluster_centers)
+
+        weighted_sq_diff = resp.unsqueeze(2) * u.unsqueeze(2) * (diff**2)  # (N, K, D)
+        numerator = weighted_sq_diff.sum(dim=0)  # (K,D)
         denominator = torch.sum(resp, dim=0, keepdim=True)  # (K,)
-        print('denominator', denominator)
-        #print('sigma de', denominator.shape)
-        sigma = (numerator / denominator.T).detach() 
-        
+        # print('denominator', denominator)
+        # print('sigma de', denominator.shape)
+        sigma = (numerator / denominator.T).detach()
+
         sigma = torch.clamp(sigma, min=1e-4, max=1e4)
 
         return cluster_centers, sigma
-    
+
     def EM_t_1D(features, resp, cluster_centers, taus, alpha, d=1):
         norm_squared = torch.sum(
-        (features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, dim=2
-        )  
-        u = (alpha + d)/(alpha +norm_squared*(taus**(-1)))  #ccalculate U shape(N,K)
-        print('u', u)
+            (features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, dim=2
+        )
+        u = (alpha + d) / (
+            alpha + norm_squared * (taus ** (-1))
+        )  # ccalculate U shape(N,K)
+        print("u", u)
 
-        ''' M step '''
-        numerator = torch.matmul(features,resp*u).T.detach()
-        #print(numerator.shape)
-        denominator = torch.sum(resp*u, dim=0, keepdim=True).T.detach()
-        print('denom cc' , denominator)
-        cluster_centers = numerator/denominator
+        """ M step """
+        numerator = torch.matmul(features, resp * u).T.detach()
+        # print(numerator.shape)
+        denominator = torch.sum(resp * u, dim=0, keepdim=True).T.detach()
+        print("denom cc", denominator)
+        cluster_centers = numerator / denominator
 
-        weighted_sums = torch.sum(resp* u * norm_squared, dim=0) 
-        #print('WS', weighted_sums.shape)
+        weighted_sums = torch.sum(resp * u * norm_squared, dim=0)
+        # print('WS', weighted_sums.shape)
         taus = (weighted_sums / torch.sum(resp, dim=0, keepdim=True)).detach()
-        print('Tau', taus)
+        print("Tau", taus)
         return cluster_centers, taus
-
 
     def soft_assignments_1D(encoded_features, cluster_centers, tau, alpha=1):
         norm_squared = torch.sum(
             (encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)) ** 2, 2
         )
         assignments = 1.0 / (1.0 + (norm_squared / (alpha * tau)))
-        assignments = (assignments ** ((alpha + 1) / 2))/(tau**1/2)
-        print('Assignments ', assignments)
+        assignments = (assignments ** ((alpha + 1) / 2)) / (tau**1 / 2)
+        print("Assignments ", assignments)
         return assignments / torch.sum(assignments, dim=1, keepdim=True)
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
@@ -242,27 +291,37 @@ def standard_trainer(
             args[1].to(device),
         )
         return (tot_main_loss + regularizers), (tot_main_loss, regularizers)
-    
+
     def repulsion_loss(cluster_centers, epsilon=1e-6):
-        'Regularization term that penalizes small distances between clusters'
-        pairwise_distances = torch.cdist(cluster_centers, cluster_centers, p=2)  # Compute pairwise distances
-        pairwise_distances = torch.triu(pairwise_distances, diagonal=1)  # Keep only upper triangle (ignores diagonal)
-        return torch.sum(1.0 / (pairwise_distances + epsilon)) 
-    
-    
+        "Regularization term that penalizes small distances between clusters"
+        pairwise_distances = torch.cdist(
+            cluster_centers, cluster_centers, p=2
+        )  # Compute pairwise distances
+        pairwise_distances = torch.triu(
+            pairwise_distances, diagonal=1
+        )  # Keep only upper triangle (ignores diagonal)
+        return torch.sum(1.0 / (pairwise_distances + epsilon))
+
     def dec_loss(epoch, base_multiplier, output, target, cluster_centers):
-        kldiv_loss = get_multiplier(epoch, base_multiplier) * (kldiv_criterion(output.log(), target))
-        regularizer = get_multiplier(epoch, base_multiplier) *  repulsion_loss(cluster_centers)
+        kldiv_loss = get_multiplier(epoch, base_multiplier) * (
+            kldiv_criterion(output.log(), target)
+        )
+        regularizer = get_multiplier(epoch, base_multiplier) * repulsion_loss(
+            cluster_centers
+        )
         return (kldiv_loss + regularizer), (kldiv_loss, regularizer)
-                   
 
     ##### Model training ####################################################################################################
-
-
-    model.to(device)
+    
+    model.to('cpu')
     set_random_seed(seed)
+    if load_pretrain:  # Load weights if given
+        pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}.pth"
+        model.load_state_dict(torch.load(pretrained_path,map_location=torch.device('cpu')))
+        print("Loaded pretrained model!")
+    
+    model.to(device)
     model.train()
-
     # losses are summed for each batch
     kldiv_criterion = KLDivLoss(
         size_average=False
@@ -279,9 +338,12 @@ def standard_trainer(
     n_iterations = len(LongCycler(dataloaders["train"]))
 
     if learn_alpha:
-        alpha = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))
-        optimizer = torch.optim.Adam(list(model.parameters()) + [alpha], lr=lr_init)
+        raw_alpha = torch.nn.Parameter(
+            torch.tensor(1.0, device=device, requires_grad=True)
+        )
+        optimizer = torch.optim.Adam(list(model.parameters()) + [raw_alpha], lr=lr_init)
     else:
+        alpha = torch.tensor(alpha, device=device, requires_grad=False)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -352,6 +414,9 @@ def standard_trainer(
     # train over epochs
     batch_no_total = 0
     kldiv_list = []
+    prev_loss = float("inf")  # Initialize with a high value
+    decreasing = True  # Track if loss was previously decreasing
+    print("Alpha: ", alpha)
     for epoch, val_obj in early_stopping(
         model,
         stop_closure,
@@ -367,6 +432,11 @@ def standard_trainer(
         lr_decay_steps=lr_decay_steps,
     ):
 
+        """if (epoch % 5 == 0) and epoch < 41:
+        save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}.pth'
+        torch.save(model.state_dict(), save_path)
+        print('Save epoch: ', epoch)"""
+
         if include_kldivergence and epoch == dec_starting_epoch:
             # TODO: include hidden dimension
             cluster_centers_list = []
@@ -381,11 +451,8 @@ def standard_trainer(
                     feature_list.append(np.array(features))
 
                 features = np.vstack(feature_list)
-                mean = features.mean(dim=0, keepdim=True)
-                std = features.std(dim=0, keepdim=True)
-                normalized_features = (features - mean) / (std + 1e-6)  # Add small epsilon to avoid division by zero
-                predicted = kmeans.fit_predict(normalized_features)
-                '''
+                predicted = kmeans.fit_predict(features)
+                """
                 wcs = []
                 # caclculate within cluster variance
                 for k in range(cluster_number):
@@ -396,32 +463,39 @@ def standard_trainer(
                         wcs.append(0)
                 wcs = np.array(wcs)
                 print("Within-Cluster Variance:", wcs)
-                np.save(f'/user/ninasophie.nellen/sensorium/tests/wcv/wcv_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', wcs)
-                '''
+                """
             cluster_centers = torch.tensor(
                 kmeans.cluster_centers_, dtype=torch.float, device=device
             )
             if use_diag_cov:
                 p = features.shape[1]
-                sigma = torch.zeros((cluster_number,p), device=device)
+                sigma = torch.zeros((cluster_number, p), device=device)
                 for k in range(cluster_number):
-                    cluster_points = torch.from_numpy(normalized_features[predicted == k]).to(device) 
-                    print(f'Points for cluster {k}: {cluster_points.shape[0]}')
+                    cluster_points = torch.from_numpy(features[predicted == k]).to(
+                        device
+                    )
+                    print(f"Points for cluster {k}: {cluster_points.shape[0]}")
                     if len(cluster_points) > 0:
-                        sigma[k] = torch.var(cluster_points, dim=0, unbiased=True) +1e-6
-                print(sigma)
+                        sigma[k] = (
+                            torch.var(cluster_points, dim=0, unbiased=True) + 1e-6
+                        )
+                # print('Sigma' , sigma)
 
-            else: 
+            else:
                 sigma = torch.zeros(cluster_number, device=device)
                 for k in range(cluster_number):
-                    cluster_points = torch.from_numpy(features[predicted == k]).to(device)  
+                    cluster_points = torch.from_numpy(features[predicted == k]).to(
+                        device
+                    )
                     if len(cluster_points) > 0:
-                        sigma[k] = torch.mean(torch.sum((cluster_points - cluster_centers[k])**2,1))
+                        sigma[k] = torch.mean(
+                            torch.sum((cluster_points - cluster_centers[k]) ** 2, 1)
+                        )
                 sigma = sigma.unsqueeze(0)
-                print(sigma)
+                # (sigma)
 
             if learn_alpha:
-                alpha.data = torch.tensor(1.0, dtype=torch.float, device=device)
+                raw_alpha.data = torch.tensor(1.0, dtype=torch.float, device=device)
 
         model.train()
         # print the quantities from tracker
@@ -442,13 +516,13 @@ def standard_trainer(
         epoch_loss_kldiv = 0
         epoch_loss_kldiv_without_scaling = 0
         epoch_kldiv_loss_regularizer = 0
-        
+
         for batch_no, (data_key, data) in tqdm(
             enumerate(LongCycler(dataloaders["train"])),
             total=n_iterations,
             desc="Epoch {}".format(epoch),
         ):
-            batch_no_total +=1
+            batch_no_total += 1
             batch_args = list(data)
             batch_kwargs = data._asdict() if not isinstance(data, dict) else data
             loss, loss_parts = full_objective(
@@ -475,48 +549,89 @@ def standard_trainer(
 
                     # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
-                    mean = feature_list.mean(dim=0, keepdim=True)
-                    std = feature_list.std(dim=0, keepdim=True)
-                    normalized_features = (feature_list - mean) / (std + 1e-6)  # Add small epsilon to avoid division by zero
+                    if learn_alpha:
+                        alpha = torch.nn.functional.softplus(raw_alpha) + 0.1
                     if use_diag_cov:
-                        output = soft_assignments_mult(normalized_features, cluster_centers, sigma, alpha,p)
+                        q = soft_assignments_mult(
+                            feature_list, cluster_centers, sigma, alpha, p
+                        )
                     else:
-                        output = soft_assignments_1D(features, cluster_centers, sigma, alpha)
-                    #print('Shape of Q matrix: ', output.shape)
-                    #print('Row sums for Q', torch.sum(output, dim=1))
+                        q = soft_assignments_1D(
+                            feature_list, cluster_centers, sigma, alpha
+                        )
+                    assert not torch.isnan(q).any(), "NaNs in soft assignments:"
+                    assert not torch.isinf(q).any(), "Infs in soft assignments:"
 
-                    # detach targets to treat them as pseudolabels for clusters
-                    target = target_distribution(output, exponent)
+                    # print(f'q.min()={q.min()}, q.max()={q.max()}, zeros_in_q={(q == 0).any()}')
+
+                    target = target_distribution(q, exponent)
+                    # print('sigma', sigma)
+                    assert not torch.isnan(target).any(), "NaNs in target:"
+                    assert not torch.isinf(target).any(), "Infs in target:"
+
+                    target = target.clamp(min=1e-10)
+                    q = q.clamp(min=1e-10)
+
+                    assert not torch.isnan(
+                        q.log()
+                    ).any(), "NaNs in soft assignments: .log()"
+                    assert not torch.isinf(
+                        q.log()
+                    ).any(), "Infs in soft assignments: .log()"
+                    # print(f'after clamp - q.min()={q.min()}, q.max()={q.max()}, zeros_in_q={(q == 0).any()}')
+
+                    kldiv_loss = get_multiplier(epoch, base_multiplier) * (
+                        kldiv_criterion(q.log(), target)
+                    )
+                    assert not torch.isnan(kldiv_loss), "KL loss isnan"
+                    assert not torch.isinf(kldiv_loss), "KL loss isinf"
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-                    kldiv_loss, kldiv_loss_parts = dec_loss(epoch, base_multiplier, output, target, cluster_centers)
                     kldiv_loss.backward()
+
+                    # if learn_alpha:
+                    #    alpha = alpha.clamp(min=0.8)  # Ensure alpha stays >= 1
                     epoch_loss_kldiv += kldiv_loss.detach()
-                    epoch_loss_kldiv_without_scaling += kldiv_loss_parts[0].detach() / get_multiplier(epoch, base_multiplier)
-                    epoch_kldiv_loss_regularizer += kldiv_loss_parts[1].detach()
+                    epoch_loss_kldiv_without_scaling += (
+                        kldiv_loss.detach() / get_multiplier(epoch, base_multiplier)
+                    )
                     epoch_loss += kldiv_loss.detach()
 
+                    """
+                    if kldiv_loss > prev_loss and decreasing:
+                        print(f"⚠️ Warning: Loss spiked at epoch {epoch}! Prev: {prev_loss:.4f}, Current: {kldiv_loss:.4f}")
+                        for name, param in model.named_parameters():
+                            if param.grad is not None:
+                                print(f"Gradient norm for {name}: {param.grad.norm().item():.6f}")
+                    decreasing = (kldiv_loss +1) < (prev_loss)  # Update trend tracker
+                    prev_loss = kldiv_loss  # Store last loss
+                    """
                     with torch.no_grad():
                         cluster_centers_list.append(cluster_centers.cpu().detach())
-                        kldiv_list.append(kldiv_loss.cpu() / get_multiplier(epoch, base_multiplier))
+                        kldiv_list.append(
+                            kldiv_loss.cpu() / get_multiplier(epoch, base_multiplier)
+                        )
 
                     if use_diag_cov:
-                        cluster_centers, sigma = EM_t_mult(normalized_features, output, cluster_centers, sigma, alpha, p)
+                        cluster_centers, sigma = EM_t_mult(
+                            feature_list, q, cluster_centers, sigma, alpha, p
+                        )
                     else:
-                        cluster_centers, sigma = EM_t_1D(features, output, cluster_centers, sigma, alpha)
-                    # Normalize the cluster centers such that they represent the real mean of the clusters
-                    '''
-                    numerator = torch.matmul(feature_list,output).T.detach()
-                    denominator = torch.sum(output, dim=0, keepdim=True).T.detach()
-                    cluster_centers = numerator/denominator
-                    '''
-                    print(sigma)
+                        cluster_centers, sigma = EM_t_1D(
+                            feature_list, q, cluster_centers, sigma, alpha
+                        )
+
+                    for name, param in model.named_parameters():
+                        if param.grad is not None and torch.isnan(param.grad).any():
+                            print(f"NaN detected in gradients of {name}")
+                        if param.grad is not None and torch.isinf(param.grad).any():
+                            print(f"NaN detected in gradients of {name}")
 
                 optimizer.step()
                 optimizer.zero_grad()
-            
-            '''
+
+            """
             if use_wandb:
                 wandb_dict = {
                     "Epoch Train loss": epoch_loss,
@@ -530,7 +645,7 @@ def standard_trainer(
                     # "Epoch validation loss Kullback-Leibler-divergence": val_loss_parts[2],
                 }
                 wandb.log(wandb_dict)
-            '''
+            """
         ## after - epoch-analysis
         """
         if save_checkpoints:
@@ -569,7 +684,7 @@ def standard_trainer(
                 "Epoch Train loss regularizers": epoch_loss_reg,
                 "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
                 "Epoch Train loss KL without scaling main": epoch_loss_kldiv_without_scaling,
-                'Epoch Train loss KL regularizers': epoch_kldiv_loss_regularizer,
+                #'Epoch Train loss KL regularizers': epoch_kldiv_loss_regularizer,
                 "Batch": batch_no,
                 "Epoch": epoch,
                 "validation_correlation": validation_correlation,
@@ -588,19 +703,23 @@ def standard_trainer(
         soft_assignments_list = []
         for k, readout in model.readout.items():
             features = readout.features.detach().squeeze()
-            soft_assignments_list.append(soft_assignments(features, cluster_centers))
+            soft_assignments_list.append(
+                soft_assignments_mult(features, cluster_centers, sigma, alpha, p)
+            )
         predicted = torch.cat(soft_assignments_list).max(1)[1]
         # append final cluster_centers
         cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
         cluster_centers_np = np.array(cluster_centers_list)
         kldiv_list_np = np.array(kldiv_list)
+        print("Alpha: ", alpha)
     tracker.finalize() if track_training else None
-    np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_repulsion_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
+    # np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_repulsion_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
 
     # Compute avg validation and test correlation
     validation_correlation = get_correlations(
         model, dataloaders["validation"], device=device, as_dict=False, per_neuron=False
     )
+    print("Training complete")
 
     if use_wandb:
         # [optional] finish the wandb run, necessary in notebooks
