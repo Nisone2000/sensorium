@@ -391,11 +391,13 @@ def standard_trainer(
         lr_decay_steps=lr_decay_steps,
     ):
         
-        if 5 < epoch <= 15:
-            save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}_l1.pth'
-            torch.save(model.state_dict(), save_path)
-            print('Save epoch: ', epoch)
+        if not include_kldivergence:
+            if 5 < epoch < 15 and epoch != 10:
+                save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}.pth'
+                torch.save(model.state_dict(), save_path)
+                print('Save epoch: ', epoch)
         
+
         if include_kldivergence and epoch == dec_starting_epoch:
             # TODO: include hidden dimension
             cluster_centers_list = []
