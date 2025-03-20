@@ -21,6 +21,16 @@ from nnfabrik.utility.nn_helpers import set_random_seed
 
 parser = argparse.ArgumentParser(description='File that executes model training for DEC clustering')
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
 
 ## Dataset
 parser.add_argument('--seed', type=int, default=42, help='random seed (default: 0)')
@@ -40,8 +50,17 @@ parser.add_argument('--clusters', default=10, type=int,
                     help='Amount of cluster centroids (default 10)')
 parser.add_argument('--exponent', default=2, type=float,
                     help='Exponent in target distribution for DEC (default: 2)')
-parser.add_argument('--include_kldivergence', default=True, type=bool,
+parser.add_argument('--include_kldivergence', default=True, type=str2bool,
                     help='Wether KL loss should be included (default: True)')
+parser.add_argument('--learn_alpha', default=False, type=str2bool,
+                    help='Wether alpha should be learned (default: False)')
+parser.add_argument('--alpha', default=2.1, type=float,
+                    help='alpha (default: 1.0')
+parser.add_argument('--load_pretrain', default=True, type=str2bool,
+                    help='Wether to load a pretrained model (default: True)')
+parser.add_argument('--pretrained_epoch', type=int, default=30,
+                    help='Number of pretrained epochs (default: 30)')
+
 
 ## Others
 parser.add_argument('--verbose', default=0, type=int,
@@ -76,6 +95,8 @@ dataset_config = {
 
 dataloaders = get_data(dataset_fn, dataset_config)
 
+regularizer = 'l1'
+
 model_fn = "sensorium.models.stacked_core_full_gauss_readout"
 model_config = {
     "pad_input": False,
@@ -99,7 +120,7 @@ model_config = {
     "init_mu_range": 0.3,
     "gauss_type": "full",
     "shifter": True,
-    "regularizer_type": "adaptive_log_norm",
+    "regularizer_type": regularizer,
     "final_batchnorm_scale": False,
 }
 
@@ -109,13 +130,25 @@ starting_epoch = args.starting_epoch
 base_multiplier = args.base_multiplier
 clusters = args.clusters
 exponent = args.exponent
-include_kldivergence = args.include_kldivergence
+#include_kldivergence = args.include_kldivergence
+learn_alpha = args.learn_alpha
+lr = args.lr
+alpha = args.alpha
+#load_pretrain = args.load_pretrain
+pretrained_epoch = args.pretrained_epoch
 
+if learn_alpha:
+    la = 'learn_alpha'
+else:
+    la = f'alpha_{alpha}'
+
+include_kldivergence=False
+load_pretrain=False
 
 if include_kldivergence:
-    path_ending = f'KL_EM_repulsion_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_se{starting_epoch}'
+    path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_{regularizer}_pe{pretrained_epoch}_lr_{lr}_seed_{seed}'
 else:
-    path_ending = f'without_KL_sedd_{seed}'
+    path_ending = f'without_KL_seed_{seed}_regularizer_{regularizer}'
 
 model = get_model(
     model_fn=model_fn,
@@ -129,7 +162,7 @@ trainer_config = {
     "verbose": False,
     "lr_decay_steps": 4,
     "avg_loss": False,
-    "lr_init": 0.009,
+    "lr_init": lr,
     "base_multiplier": base_multiplier,
     "device": f"cuda:{cuda_number}",
     "wandb_model_congfig": model_config,
@@ -141,6 +174,11 @@ trainer_config = {
     "use_wandb": True,
     "dec_starting_epoch": starting_epoch,
     'exponent': exponent,
+    'use_diag_cov': True,
+    'learn_alpha': learn_alpha,
+    'alpha': alpha,
+    'load_pretrain': load_pretrain,
+    'pretrained_epoch': pretrained_epoch,
 }
 if include_kldivergence:
     trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
@@ -151,7 +189,6 @@ if include_kldivergence:
         predicted,
         state_dict,
     ) = trainer(model, dataloaders, seed=seed)
-    print(cluster_centers_np)
     script_directory = os.path.dirname(os.path.abspath(__file__))
     save_path = os.path.join(
         script_directory,

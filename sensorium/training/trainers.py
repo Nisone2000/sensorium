@@ -43,7 +43,8 @@ def standard_trainer(
     wandb_name=None,
     wandb_model_config=None,
     wandb_dataset_config=None,
-
+    wandb_entity="ninasophie-nellen-g-ttingen-university",
+    wandb_project="Model_without_rotation",
     track_training=False,
     detach_core=False,
     deeplake_ds=False,
@@ -62,6 +63,7 @@ def standard_trainer(
     learn_alpha=False,
     exponent=2,
     load_pretrain=False,
+    load_adlognorm=True,
     pretrained_epoch=30,
     **kwargs,
 ):
@@ -148,35 +150,16 @@ def standard_trainer(
         """
         weight = (batch**exponent) / torch.sum(batch, 0)
         return (weight.t() / torch.sum(weight, 1)).t()
+        #weight = exponent * batch - torch.logsumexp(batch,0)
+        #return (weight.t()/ torch.logsumexp(weight,1)).t()
 
     def soft_assignments_mult(encoded_features, cluster_centers, sigma, alpha, p=1):
         sigma_inv = 1.0 / sigma  # (K, D)
-        assert not torch.isnan(encoded_features).any(), "NaNs in encoded_features:"
-        assert not torch.isnan(cluster_centers).any(), "NaNs in cluster_centers:"
-        assert not torch.isinf(encoded_features).any(), "isinf in encoded_features:"
-        assert not torch.isinf(cluster_centers).any(), "isinf in cluster_centers:"
-        diff = encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(
-            0
-        )  # (N, K, D)
-        assert not torch.isnan(diff).any(), "NaNs in diff:"
-        assert not torch.isinf(diff).any(), "isinf in diff:"
-        # print(diff)
+        diff = encoded_features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)  # (N, K, D)
         norm_sigma = torch.sum(diff * sigma_inv * diff, dim=2)  # (N, K)
-        # print('Norm sigma', norm_sigma)
-        assert not torch.isnan(norm_sigma).any(), "NaNs in norm_sigma:"
-        assert not torch.isinf(norm_sigma).any(), "isinf in norm_sigma:"
         det = torch.sum(torch.log(sigma), dim=1)  # log(det) since sigma is diagonal
-
-        assert not torch.isnan(det).any(), "NaNs in alpha:"
-        assert not torch.isinf(det).any(), "isinf in alpha:"
-
-        # Log Gamma terms
         log_gamma_top = torch.lgamma((alpha + p) / 2)
         log_gamma_bottom = torch.lgamma(alpha / 2)
-
-        assert not torch.isnan(alpha).any(), "NaNs in alpha:"
-        assert not torch.isinf(alpha).any(), "isinf in alpha:"
-
         # Log-density formula for multivariate Student-t
         log_pdf = (
             log_gamma_top
@@ -185,36 +168,9 @@ def standard_trainer(
             - (p / 2) * torch.log(alpha * torch.pi)
             - ((alpha + p) / 2) * torch.log(1 + (norm_sigma / alpha))
         )
-
-        assert not torch.isnan(log_pdf).any(), "NaNs in log_pdf:"
-        assert not torch.isinf(log_pdf).any(), "isinf in log_pdf:"
-
-        # print('log pdf' , log_pdf)
-        # print('exp(log) pdf', torch.exp(log_pdf))
-        # log_assignments = log_pdf - torch.logsumexp(log_pdf, dim=1, keepdim=True)
-        log_pdf_max = torch.max(log_pdf, dim=1, keepdim=True)[0]  # Get max per row
-
-        assert not torch.isnan(log_pdf_max).any(), "NaNs in log_pdf_max"
-        assert not torch.isinf(log_pdf_max).any(), "isinf in log_pdf_max"
-
-        assert not torch.isnan(
-            torch.logsumexp(log_pdf - log_pdf_max, dim=1, keepdim=True)
-        ).any(), "NaNs in logsumexp bracets"
-        assert not torch.isinf(
-            torch.logsumexp(log_pdf - log_pdf_max, dim=1, keepdim=True)
-        ).any(), "isinf in logsumexp bracets"
+        #log_pdf_max = torch.max(log_pdf, dim=1, keepdim=True)[0]  # Get max per row
 
         log_assignments = log_pdf - torch.logsumexp(log_pdf, dim=1, keepdim=True)
-        # print('log assignmnents ', log_assignments)
-        assert not torch.isnan(log_assignments).any(), "NaNs in log_assignments:"
-        assert not torch.isinf(log_assignments).any(), "isinf in log_assignments:"
-
-        assert not torch.isnan(
-            torch.exp(log_assignments)
-        ).any(), "NaNs in torch.exp(log_pdf):"
-        assert not torch.isinf(
-            torch.exp(log_assignments)
-        ).any(), "isinf in torch.exp(log_pdf):"
         return torch.exp(log_assignments)  # Convert log-assignments to probabilities
 
     def EM_t_mult(features, resp, cluster_centers, sigma, alpha, d=1):
@@ -316,7 +272,10 @@ def standard_trainer(
     model.to('cpu')
     set_random_seed(seed)
     if load_pretrain:  # Load weights if given
-        pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}.pth"
+        if load_adlognorm:
+            pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}.pth"
+        else:
+            pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}_l1.pth"
         model.load_state_dict(torch.load(pretrained_path,map_location=torch.device('cpu')))
         print("Loaded pretrained model!")
     
@@ -431,12 +390,12 @@ def standard_trainer(
         scheduler=scheduler,
         lr_decay_steps=lr_decay_steps,
     ):
-
-        """if (epoch % 5 == 0) and epoch < 41:
-        save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}.pth'
-        torch.save(model.state_dict(), save_path)
-        print('Save epoch: ', epoch)"""
-
+        
+        if 5 < epoch <= 15:
+            save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}_l1.pth'
+            torch.save(model.state_dict(), save_path)
+            print('Save epoch: ', epoch)
+        
         if include_kldivergence and epoch == dec_starting_epoch:
             # TODO: include hidden dimension
             cluster_centers_list = []
