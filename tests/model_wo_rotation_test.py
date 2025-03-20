@@ -95,7 +95,8 @@ dataset_config = {
 
 dataloaders = get_data(dataset_fn, dataset_config)
 
-regularizer = 'l1'
+regularizer = "adaptive_log_norm"
+#'l1'
 
 model_fn = "sensorium.models.stacked_core_full_gauss_readout"
 model_config = {
@@ -142,11 +143,14 @@ if learn_alpha:
 else:
     la = f'alpha_{alpha}'
 
-include_kldivergence=False
-load_pretrain=False
+include_kldivergence=True
+load_pretrain=True
 
 if include_kldivergence:
-    path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_{regularizer}_pe{pretrained_epoch}_lr_{lr}_seed_{seed}'
+    if regularizer == 'l1':
+        path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_{regularizer}_pe{pretrained_epoch}_lr_{lr}_seed_{seed}'
+    else:
+        path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_pe{pretrained_epoch}_lr_{lr}_seed_{seed}'
 else:
     path_ending = f'without_KL_seed_{seed}_regularizer_{regularizer}'
 
@@ -179,6 +183,7 @@ trainer_config = {
     'alpha': alpha,
     'load_pretrain': load_pretrain,
     'pretrained_epoch': pretrained_epoch,
+    'load_adlognorm': False,
 }
 if include_kldivergence:
     trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)
