@@ -76,7 +76,7 @@ cuda_number = args.cuda_number
 
 torch.cuda.set_device(f"cuda:{cuda_number}")
 
-
+hidden_channels=128
 
 # loading the SENSORIUM+ dataset
 pre = "/usr/users/agecker/datasets/sensorium_2022_pictures/real_dataset/"
@@ -88,7 +88,7 @@ dataset_config = {
     "normalize": True,
     "include_behavior": True,
     "include_eye_position": True,
-    "batch_size": 128,
+    "batch_size": hidden_channels,
     "scale": 0.25,
     "seed": seed,
 }
@@ -96,6 +96,8 @@ dataset_config = {
 dataloaders = get_data(dataset_fn, dataset_config)
 
 regularizer = "adaptive_log_norm"
+load_adlognorm =True
+gamma_readout =10
 #'l1'
 
 model_fn = "sensorium.models.stacked_core_full_gauss_readout"
@@ -105,10 +107,10 @@ model_config = {
     "layers": 4,
     "input_kern": 9,
     "gamma_input": 6.3831,
-    "gamma_readout": 10,
-    "feature_reg_weight": 10,
+    "gamma_readout": gamma_readout,
+    "feature_reg_weight": gamma_readout,
     "hidden_kern": 7,
-    "hidden_channels": 128,
+    "hidden_channels": hidden_channels,
     "depth_separable": True,
     "grid_mean_predictor": {
         "type": "cortex",
@@ -150,9 +152,9 @@ if include_kldivergence:
     if regularizer == 'l1':
         path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_{regularizer}_pe{pretrained_epoch}_lr_{lr}_seed_{seed}'
     else:
-        path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_pe{pretrained_epoch}_lr_{lr}_seed_{seed}'
+        path_ending = f'KL_EM_diagcov_{la}_exp_{exponent}_cluster_{clusters}_mult_{base_multiplier}_reg_adlognorm_pe{pretrained_epoch}_lr_{lr}_seed_{seed}_{hidden_channels}'
 else:
-    path_ending = f'without_KL_seed_{seed}_regularizer_{regularizer}'
+    path_ending = f'without_KL_seed_{seed}_{hidden_channels}'
 
 model = get_model(
     model_fn=model_fn,
@@ -183,7 +185,7 @@ trainer_config = {
     'alpha': alpha,
     'load_pretrain': load_pretrain,
     'pretrained_epoch': pretrained_epoch,
-    'load_adlognorm': False,
+    'load_adlognorm': load_adlognorm,
 }
 if include_kldivergence:
     trainer = get_trainer(trainer_fn=trainer_fn, trainer_config=trainer_config)

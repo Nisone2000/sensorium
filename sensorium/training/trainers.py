@@ -43,8 +43,6 @@ def standard_trainer(
     wandb_name=None,
     wandb_model_config=None,
     wandb_dataset_config=None,
-    wandb_entity="ninasophie-nellen-g-ttingen-university",
-    wandb_project="Model_without_rotation",
     track_training=False,
     detach_core=False,
     deeplake_ds=False,
@@ -150,8 +148,7 @@ def standard_trainer(
         """
         weight = (batch**exponent) / torch.sum(batch, 0)
         return (weight.t() / torch.sum(weight, 1)).t()
-        #weight = exponent * batch - torch.logsumexp(batch,0)
-        #return (weight.t()/ torch.logsumexp(weight,1)).t()
+
 
     def soft_assignments_mult(encoded_features, cluster_centers, sigma, alpha, p=1):
         sigma_inv = 1.0 / sigma  # (K, D)
@@ -178,23 +175,15 @@ def standard_trainer(
         diff = features.T.unsqueeze(1) - cluster_centers.unsqueeze(0)
         norm_sigma = torch.sum((diff**2 * sigma_inv), 2)
         u = ((alpha + d) / (alpha + norm_sigma)).detach()  # ccalculate U shape(N,K)
-        # print('u', u)
-        # print(resp.shape)
-
+        
         """ M step """
         numerator = torch.matmul(features, resp * u).T.detach()
-        # print(numerator.shape)
         denominator = torch.sum(resp * u, dim=0, keepdim=True).T.detach()
-        # print(denominator)
         cluster_centers = numerator / denominator
-
-        # print('cluster centers', cluster_centers)
 
         weighted_sq_diff = resp.unsqueeze(2) * u.unsqueeze(2) * (diff**2)  # (N, K, D)
         numerator = weighted_sq_diff.sum(dim=0)  # (K,D)
         denominator = torch.sum(resp, dim=0, keepdim=True)  # (K,)
-        # print('denominator', denominator)
-        # print('sigma de', denominator.shape)
         sigma = (numerator / denominator.T).detach()
 
         sigma = torch.clamp(sigma, min=1e-4, max=1e4)
@@ -218,7 +207,6 @@ def standard_trainer(
         cluster_centers = numerator / denominator
 
         weighted_sums = torch.sum(resp * u * norm_squared, dim=0)
-        # print('WS', weighted_sums.shape)
         taus = (weighted_sums / torch.sum(resp, dim=0, keepdim=True)).detach()
         print("Tau", taus)
         return cluster_centers, taus
@@ -229,7 +217,6 @@ def standard_trainer(
         )
         assignments = 1.0 / (1.0 + (norm_squared / (alpha * tau)))
         assignments = (assignments ** ((alpha + 1) / 2)) / (tau**1 / 2)
-        print("Assignments ", assignments)
         return assignments / torch.sum(assignments, dim=1, keepdim=True)
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
@@ -269,11 +256,20 @@ def standard_trainer(
 
     ##### Model training ####################################################################################################
     
+    print('Load pretrain ', load_pretrain)
     model.to('cpu')
     set_random_seed(seed)
     if load_pretrain:  # Load weights if given
+        k = list(model.readout.keys())[0]
+        dim = model.readout[k].features.shape[1]
+        print(dim)
         if load_adlognorm:
-            pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}.pth"
+            if dim ==64:
+                pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_dim{dim}_seed_{seed}.pth"
+            elif dim == 256:
+                pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}_{dim}.pth"               
+            else: 
+                 pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}.pth"
         else:
             pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}_l1.pth"
         model.load_state_dict(torch.load(pretrained_path,map_location=torch.device('cpu')))
@@ -392,14 +388,13 @@ def standard_trainer(
     ):
         
         if not include_kldivergence:
-            if 5 < epoch < 15 and epoch != 10:
-                save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}.pth'
+            if 5 < epoch < 45 and epoch %5 == 0:
+                save_path = f'../tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}_256.pth'
                 torch.save(model.state_dict(), save_path)
                 print('Save epoch: ', epoch)
         
 
         if include_kldivergence and epoch == dec_starting_epoch:
-            # TODO: include hidden dimension
             cluster_centers_list = []
             kmeans = KMeans(
                 n_clusters=cluster_number, n_init=kmeans_init, random_state=seed
@@ -413,18 +408,7 @@ def standard_trainer(
 
                 features = np.vstack(feature_list)
                 predicted = kmeans.fit_predict(features)
-                """
-                wcs = []
-                # caclculate within cluster variance
-                for k in range(cluster_number):
-                    cluster_points = features[predicted == k] 
-                    if cluster_points.shape[0] > 0: 
-                        wcs.append(np.mean(np.linalg.norm(cluster_points - kmeans.cluster_centers_[k], axis=1) ** 2))
-                    else:
-                        wcs.append(0)
-                wcs = np.array(wcs)
-                print("Within-Cluster Variance:", wcs)
-                """
+
             cluster_centers = torch.tensor(
                 kmeans.cluster_centers_, dtype=torch.float, device=device
             )
@@ -440,7 +424,6 @@ def standard_trainer(
                         sigma[k] = (
                             torch.var(cluster_points, dim=0, unbiased=True) + 1e-6
                         )
-                # print('Sigma' , sigma)
 
             else:
                 sigma = torch.zeros(cluster_number, device=device)
@@ -453,7 +436,6 @@ def standard_trainer(
                             torch.sum((cluster_points - cluster_centers[k]) ** 2, 1)
                         )
                 sigma = sigma.unsqueeze(0)
-                # (sigma)
 
             if learn_alpha:
                 raw_alpha.data = torch.tensor(1.0, dtype=torch.float, device=device)
@@ -507,8 +489,6 @@ def standard_trainer(
                     for k, readout in model.readout.items():
                         features = readout.features.squeeze()
                         feature_list.append(features)
-
-                    # features_subset = torch.cat(features_subset, dim=1)
                     feature_list = torch.cat(feature_list, dim=1)
                     if learn_alpha:
                         alpha = torch.nn.functional.softplus(raw_alpha) + 0.1
@@ -520,32 +500,13 @@ def standard_trainer(
                         q = soft_assignments_1D(
                             feature_list, cluster_centers, sigma, alpha
                         )
-                    assert not torch.isnan(q).any(), "NaNs in soft assignments:"
-                    assert not torch.isinf(q).any(), "Infs in soft assignments:"
-
-                    # print(f'q.min()={q.min()}, q.max()={q.max()}, zeros_in_q={(q == 0).any()}')
-
                     target = target_distribution(q, exponent)
-                    # print('sigma', sigma)
-                    assert not torch.isnan(target).any(), "NaNs in target:"
-                    assert not torch.isinf(target).any(), "Infs in target:"
-
                     target = target.clamp(min=1e-10)
                     q = q.clamp(min=1e-10)
-
-                    assert not torch.isnan(
-                        q.log()
-                    ).any(), "NaNs in soft assignments: .log()"
-                    assert not torch.isinf(
-                        q.log()
-                    ).any(), "Infs in soft assignments: .log()"
-                    # print(f'after clamp - q.min()={q.min()}, q.max()={q.max()}, zeros_in_q={(q == 0).any()}')
 
                     kldiv_loss = get_multiplier(epoch, base_multiplier) * (
                         kldiv_criterion(q.log(), target)
                     )
-                    assert not torch.isnan(kldiv_loss), "KL loss isnan"
-                    assert not torch.isinf(kldiv_loss), "KL loss isinf"
 
                     # To avoid underflow issues when computing this quantity, this loss expects the argument input in the log-space.
                     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
@@ -558,16 +519,6 @@ def standard_trainer(
                         kldiv_loss.detach() / get_multiplier(epoch, base_multiplier)
                     )
                     epoch_loss += kldiv_loss.detach()
-
-                    """
-                    if kldiv_loss > prev_loss and decreasing:
-                        print(f"⚠️ Warning: Loss spiked at epoch {epoch}! Prev: {prev_loss:.4f}, Current: {kldiv_loss:.4f}")
-                        for name, param in model.named_parameters():
-                            if param.grad is not None:
-                                print(f"Gradient norm for {name}: {param.grad.norm().item():.6f}")
-                    decreasing = (kldiv_loss +1) < (prev_loss)  # Update trend tracker
-                    prev_loss = kldiv_loss  # Store last loss
-                    """
                     with torch.no_grad():
                         cluster_centers_list.append(cluster_centers.cpu().detach())
                         kldiv_list.append(
@@ -583,11 +534,6 @@ def standard_trainer(
                             feature_list, q, cluster_centers, sigma, alpha
                         )
 
-                    for name, param in model.named_parameters():
-                        if param.grad is not None and torch.isnan(param.grad).any():
-                            print(f"NaN detected in gradients of {name}")
-                        if param.grad is not None and torch.isinf(param.grad).any():
-                            print(f"NaN detected in gradients of {name}")
 
                 optimizer.step()
                 optimizer.zero_grad()
@@ -674,7 +620,7 @@ def standard_trainer(
         kldiv_list_np = np.array(kldiv_list)
         print("Alpha: ", alpha)
     tracker.finalize() if track_training else None
-    # np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_repulsion_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
+    # np.save(f'../tests/cluster_centers/kldiv_repulsion_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
 
     # Compute avg validation and test correlation
     validation_correlation = get_correlations(
