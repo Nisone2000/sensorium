@@ -5,7 +5,8 @@ from neuralpredictors.layers.cores import RotationEquivariant2dCore
 from neuralpredictors.layers.encoders import FiringRateEncoder
 from neuralpredictors.layers.shifters import MLPShifter, StaticAffine2dShifter
 from neuralpredictors.utils import get_module_output
-from nnfabrik.utility.nn_helpers import get_dims_for_loader_dict, set_random_seed
+from nnfabrik.utility.nn_helpers import (get_dims_for_loader_dict,
+                                         set_random_seed)
 from torch import nn
 
 from .readouts import MultipleFullGaussian2d

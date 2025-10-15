@@ -1,11 +1,11 @@
 import os
+
+import numpy as np
 import pandas as pd
 import torch
-import numpy as np
-
-from nnfabrik.builder import get_data
-from neuralpredictors.training import eval_state, device_state
 from neuralpredictors.data.datasets import FileTreeDataset
+from neuralpredictors.training import device_state, eval_state
+from nnfabrik.builder import get_data
 
 
 def model_predictions(model, dataloader, data_key, device="cpu"):
@@ -26,7 +26,11 @@ def model_predictions(model, dataloader, data_key, device="cpu"):
                 output = torch.cat(
                     (
                         output,
-                        (model(images.to(device), data_key=data_key, **batch_kwargs).detach().cpu()),
+                        (
+                            model(images.to(device), data_key=data_key, **batch_kwargs)
+                            .detach()
+                            .cpu()
+                        ),
                     ),
                     dim=0,
                 )
@@ -104,7 +108,12 @@ def get_data_hub_loader(dataloader):
 
 
 def generate_submission_file(
-    trained_model, dataloaders, data_key=None, path=None, device="cpu", tier=None,
+    trained_model,
+    dataloaders,
+    data_key=None,
+    path=None,
+    device="cpu",
+    tier=None,
 ):
     """
     Helper function to create the submission .csv file, given a trained model and the dataloader.
@@ -137,11 +146,13 @@ def generate_submission_file(
 
         if isinstance(test_dataloader.dataset, FileTreeDataset):
             trial_indices, image_ids, neuron_ids, _ = get_data_filetree_loader(
-                dataloader=test_dataloader, tier=tier,
+                dataloader=test_dataloader,
+                tier=tier,
             )
         else:
             trial_indices, image_ids, neuron_ids = get_data_hub_loader(
-                dataloader=test_dataloader, tier=tier,
+                dataloader=test_dataloader,
+                tier=tier,
             )
 
         df = pd.DataFrame(
@@ -154,7 +165,11 @@ def generate_submission_file(
         )
         tier_name = tier if tier != "test" else "live_test"
         submission_filename = f"submission_file_{tier_name}.csv"
-        save_path = os.path.join(path, submission_filename) if path is not None else submission_filename
+        save_path = (
+            os.path.join(path, submission_filename)
+            if path is not None
+            else submission_filename
+        )
         df.to_csv(save_path, index=False)
         print(f"Submission file saved for tier: {tier_name}. Saved in: {save_path}")
 

@@ -39,18 +39,9 @@ def standard_trainer(
     lr_decay_factor=0.3,
     min_lr=0.0001,
     cb=None,
-    wandb_entity=None,
-    wandb_project="Model_without_rotation",
-    use_wandb=True,
-    wandb_name=None,
-    wandb_model_config=None,
-    wandb_dataset_config=None,
     track_training=False,
     detach_core=False,
     deeplake_ds=False,
-    save_checkpoints=True,
-    checkpoint_save_path="../tests/model_checkpoints/sensorium_p_rotation_model_dec_",
-    chpt_save_step=15,
     include_kldivergence=True,
     cluster_number=10,
     alpha=1.0,
@@ -61,10 +52,7 @@ def standard_trainer(
     learn_alpha=False,
     exponent=2,
     load_pretrain=False,
-    load_adlognorm=True,
-    pretrained_epoch=30,
     include_mixingcoefficients=False,
-    held_out_neurons=False,
     **kwargs,
 ):
     """
@@ -97,14 +85,11 @@ def standard_trainer(
         cluster_number: Give number of clusters for DEC clustering algortihm
         alpha: alpha used for calculation of soft assignment
         dec_starting_epoch: Epoch at which we start the initialisation for the cluster centroids for dec clustering
-        dec_warumup_epoch: Epoch at which we have the full regularizer for KL loss
         base_multiplier: multiplier to get KL to same order of magnitude as Poisson loss
         kmeans_init: number of iterations for kmeans for cluster initialisation
-        subsamples: number of subsamples used for clustering
         exponent: The exponent for the target distribution for DEC
         use_diag_conv: Bool that indicates wether to use a diagonal covariance matrix or just one value for each cluster in EM step
         learn_alpha: learn alpha or set it as a parameter
-        held_out_neurons: Bool Whether to hold out neurons for DEC clustering (load array of 200 held out neurons not included in clustering)
         **kwargs:
 
     Returns:
@@ -222,42 +207,15 @@ def standard_trainer(
         )
         return (tot_main_loss + regularizers), (tot_main_loss, regularizers)
 
-    def repulsion_loss(cluster_centers, epsilon=1e-6):
-        "Regularization term that penalizes small distances between clusters"
-        pairwise_distances = torch.cdist(
-            cluster_centers, cluster_centers, p=2
-        )  # Compute pairwise distances
-        pairwise_distances = torch.triu(
-            pairwise_distances, diagonal=1
-        )  # Keep only upper triangle (ignores diagonal)
-        return torch.sum(1.0 / (pairwise_distances + epsilon))
-
-    def dec_loss(epoch, base_multiplier, output, target, cluster_centers):
-        kldiv_loss = get_multiplier(epoch, base_multiplier) * (
-            kldiv_criterion(output.log(), target)
-        )
-        regularizer = get_multiplier(epoch, base_multiplier) * repulsion_loss(
-            cluster_centers
-        )
-        return (kldiv_loss + regularizer), (kldiv_loss, regularizer)
-
     ##### Model training ####################################################################################################
     
     model.to('cpu')
     set_random_seed(seed)
     if load_pretrain:  # Load weights if given
+        pretrained_path='give path'
         k = list(model.readout.keys())[0]
         dim = model.readout[k].features.shape[1]
         print(dim)
-        if load_adlognorm:
-            if dim ==64:
-                pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_dim{dim}_seed_{seed}.pth"
-            elif dim == 256:
-                pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}_{dim}.pth"               
-            else: 
-                 pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}.pth"
-        else:
-            pretrained_path = f"../tests/model_checkpoints/sensorium_model_dec_pretreined_{pretrained_epoch}epochs_seed_{seed}_l1.pth"
         model.load_state_dict(torch.load(pretrained_path,map_location=torch.device('cpu')))
         print("Loaded pretrained model!")
     
@@ -327,31 +285,6 @@ def standard_trainer(
         tracker = MultipleObjectiveTracker(**tracker_dict)
     else:
         tracker = None
-
-    if use_wandb:
-        # initalise wandb
-        wandb.init(
-            project=wandb_project,
-            entity=wandb_entity,
-            # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
-            name=wandb_name,
-            # Track hyperparameters and run metadata
-            config={
-                "learning_rate": lr_init,
-                "architecture": wandb_model_config,
-                "dataset": wandb_dataset_config,
-                "cur_epochs": max_iter,
-                "starting epoch": epoch,
-                "lr_decay_steps": lr_decay_steps,
-                "lr_decay_factor": lr_decay_factor,
-                "min_lr": min_lr,
-            },
-        )
-        wandb.run.log_code(".")
-        # metrics represent any value I want to track, if they're hidden, they're not displayed on default cisualisation
-        wandb.define_metric(name="Epoch", hidden=True)
-        wandb.define_metric(name="Batch", hidden=True)
-
     # train over epochs
     batch_no_total = 0
     kldiv_list = []
@@ -369,14 +302,6 @@ def standard_trainer(
         scheduler=scheduler,
         lr_decay_steps=lr_decay_steps,
     ):
-        
-        if not include_kldivergence:
-            "saves baseline model checkpoints to load later"
-            if 5 < epoch < 40 and epoch % 5 == 0:
-                save_path = f'/user/ninasophie.nellen/sensorium/tests/model_checkpoints/sensorium_model_dec_pretreined_{epoch}epochs_seed_{seed}.pth'
-                torch.save(model.state_dict(), save_path)
-                print('Save epoch: ', epoch)
-        
 
         if include_kldivergence and epoch == dec_starting_epoch:
             # TODO: include hidden dimension
@@ -389,18 +314,7 @@ def standard_trainer(
             with torch.no_grad():
                 for i,(k,readout) in enumerate(model.readout.items()):
                     features = readout.features.cpu().detach().squeeze().T.numpy()
-                    if held_out_neurons:
-                        # load the held out neurons
-                        indices_tensor = torch.load(
-                            f"/user/ninasophie.nellen/sensorium/sensorium/training/selected_indices_likelihood.pth"
-                        )
-                        indices = indices_tensor[i].numpy()
-                        mask = np.ones(features.shape[0], dtype=bool)
-                        mask[indices] = False
-                        features = features[mask, :]
-                        feature_list.append(np.array(features))
-                    else:
-                        feature_list.append(np.array(features))
+                    feature_list.append(np.array(features))
 
                 features = np.vstack(feature_list)
                 predicted = kmeans.fit_predict(features)
@@ -484,14 +398,6 @@ def standard_trainer(
                     feature_list = []
                     for i, (k, readout) in enumerate(model.readout.items()):
                         features = readout.features.squeeze()
-                        if held_out_neurons:
-                            indices_tensor = torch.load(
-                                f"/user/ninasophie.nellen/sensorium/sensorium/training/selected_indices_likelihood.pth"
-                            )
-                            indices = indices_tensor[i]
-                            mask = np.ones(features.shape[1], dtype=bool)
-                            mask[indices] = False
-                            features = features[:,mask]
                         feature_list.append(features)
 
                     # features_subset = torch.cat(features_subset, dim=1)
@@ -565,23 +471,6 @@ def standard_trainer(
         print(
             f"EPOCH={epoch}  validation_correlation={validation_correlation}  Epoch Train loss Kullback-Leibler-divergence={epoch_loss_kldiv_without_scaling}"
         )
-
-        if use_wandb:
-            wandb_dict = {
-                "Epoch Train loss": epoch_loss,
-                "Epoch Train loss main": epoch_loss_main,
-                "Epoch Train loss regularizers": epoch_loss_reg,
-                "Epoch Train loss Kullback-Leibler-divergence": epoch_loss_kldiv,
-                "Epoch Train loss KL without scaling main": epoch_loss_kldiv_without_scaling,
-                "Batch": batch_no,
-                "Epoch": epoch,
-                "validation_correlation": validation_correlation,
-                "Epoch validation loss": val_loss,
-                "Epoch validation loss main": val_loss_parts[0],
-                "Epoch validation loss regularizers": val_loss_parts[1],
-                "Learning rate": optimizer.param_groups[0]["lr"],
-            }
-            wandb.log(wandb_dict)
         model.train()
 
     ##### Model evaluation ####################################################################################################
@@ -590,15 +479,6 @@ def standard_trainer(
         soft_assignments_list = []
         for i,(k, readout) in enumerate(model.readout.items()):
             features = readout.features.detach().squeeze()
-            if held_out_neurons:
-                # load the held out neurons
-                indices_tensor = torch.load(
-                    f"/user/ninasophie.nellen/sensorium/sensorium/training/selected_indices_likelihood.pth"
-                )
-                indices = indices_tensor[i]
-                mask = np.ones(features.shape[1], dtype=bool)
-                mask[indices] = False
-                features = features[:, mask]
             if include_mixingcoefficients:
                 soft_assignments_list.append(
                     soft_assignments_mult(features, cluster_centers, sigma, alpha, p, mixing_coefficients)
@@ -608,23 +488,16 @@ def standard_trainer(
                     soft_assignments_mult(features, cluster_centers, sigma, alpha, p)
                 ) 
         predicted = torch.cat(soft_assignments_list).max(1)[1]
-        # append final cluster_centers
         cluster_centers_list.append(cluster_centers.cpu().detach().numpy())
         cluster_centers_np = np.array(cluster_centers_list)
         signa_np = sigma.cpu().detach().numpy()
         mixing_coefficients = mixing_coefficients.cpu().detach().numpy() if include_mixingcoefficients else None
     tracker.finalize() if track_training else None
-    # np.save(f'/user/ninasophie.nellen/sensorium/tests/cluster_centers/kldiv_repulsion_loss_exponent_{exponent}_{base_multiplier}_se_{dec_starting_epoch}.npy', kldiv_list_np)
-
-    # Compute avg validation and test correlation
     validation_correlation = get_correlations(
         model, dataloaders["validation"], device=device, as_dict=False, per_neuron=False
     )
     print("Training complete")
 
-    if use_wandb:
-        # [optional] finish the wandb run, necessary in notebooks
-        wandb.finish()
 
     # return the whole tracker output as a dict
     output = {k: v for k, v in tracker.log.items()} if track_training else {}

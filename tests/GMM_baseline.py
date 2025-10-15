@@ -21,23 +21,15 @@ import studenttmixture
 from studenttmixture.em_student_mixture import EMStudentMixture
 from sklearn.mixture import GaussianMixture
 
-seed = 42
+seed = 12345
 set_random_seed(seed)
 torch.cuda.is_available()
 cuda_number = 3
 n_components=5
 torch.cuda.set_device(f"cuda:{cuda_number}")
-clusters = range(6,65)
-rotation_equivariant = True
+clusters = [5,10,20]
 
-if not rotation_equivariant:
-
-  path_ending = path_ending = f'without_KL_seed_{seed}_regularizer_l1'
-  save_path = f'model_checkpoints/sensorium_model_dec_{path_ending}.pth'
-  weights = torch.load(save_path)
-
-else:
-  weights = torch.load(f'Polly_data/final_seed_{seed}.pth')
+weights = torch.load(f'path/final_seed_{seed}.pth')
 features_list = []
 for key, tensor in weights.items():
     if key.endswith('._features') and key.startswith('readout.'):
@@ -61,5 +53,5 @@ for n_components in clusters:
 
   gn = mixture_model.fit(features)
   predictions = gn.predict(features)
-  np.save(f"predictions/predictions_GMM_without_KL_{n_components}clusters_seed_{seed}_rotation_equivariant.npy", predictions)
+  np.save(f"predictions/predictions_GMM_without_KL{n_components}_cluster_seed_{seed}_GMM.npy", predictions)
   print(f'Cluster {n_components} complete' )

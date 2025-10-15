@@ -1,23 +1,19 @@
+import os
 from collections import OrderedDict
 from itertools import zip_longest
+
 import numpy as np
-import os
+from neuralpredictors.data.datasets import FileTreeDataset, StaticImageSet
+from neuralpredictors.data.samplers import SubsetSequentialSampler
+from neuralpredictors.data.transforms import (AddBehaviorAsChannels,
+                                              AddPupilCenterAsChannels,
+                                              NeuroNormalizer, ScaleInputs,
+                                              SelectInputChannel, Subsample,
+                                              ToTensor)
+from nnfabrik.utility.nn_helpers import set_random_seed
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
-from nnfabrik.utility.nn_helpers import set_random_seed
-from neuralpredictors.data.datasets import StaticImageSet, FileTreeDataset
 
-from neuralpredictors.data.transforms import (
-    Subsample,
-    ToTensor,
-    NeuroNormalizer,
-    AddBehaviorAsChannels,
-    SelectInputChannel,
-    ScaleInputs,
-    AddPupilCenterAsChannels,
-)
-
-from neuralpredictors.data.samplers import SubsetSequentialSampler
 
 def static_loader(
     path: str = None,

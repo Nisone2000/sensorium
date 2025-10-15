@@ -1,12 +1,10 @@
-from neuralpredictors.layers.cores import (
-    RotationEquivariant2dCore,
-    SE2dCore,
-    Stacked2dCore,
-)
+from neuralpredictors.layers.cores import (RotationEquivariant2dCore, SE2dCore,
+                                           Stacked2dCore)
 from neuralpredictors.layers.encoders import FiringRateEncoder
 from neuralpredictors.layers.shifters import MLPShifter, StaticAffine2dShifter
 from neuralpredictors.utils import get_module_output
-from nnfabrik.utility.nn_helpers import get_dims_for_loader_dict, set_random_seed
+from nnfabrik.utility.nn_helpers import (get_dims_for_loader_dict,
+                                         set_random_seed)
 from torch import nn
 
 from .readouts import MultipleFullGaussian2d
@@ -53,6 +51,7 @@ def stacked_core_full_gauss_readout(
     hidden_padding=None,
     core_bias=True,
     final_batchnorm_scale=False,
+    gt_source_grid=None,
 ):
     """
     Model class of a stacked2dCore (from neuralpredictors) and a pointpooled (spatial transformer) readout
@@ -75,6 +74,7 @@ def stacked_core_full_gauss_readout(
             has to have all these ids and cannot have any more.
         all other args: See Documentation of Stacked2dCore in neuralpredictors.layers.cores and
             PointPooled2D in neuralpredictors.layers.readouts
+        gt source_grid: if not None, needs to be a numpy array of shape (n_neurons, 2) with the ground truth location of RF center
 
     Returns: An initialized model which consists of model.core and model.readout
     """
@@ -147,6 +147,7 @@ def stacked_core_full_gauss_readout(
         grid_mean_predictor_type=grid_mean_predictor_type,
         source_grids=source_grids,
         regularizer_type=regularizer_type,
+        gt_source_grid=gt_source_grid,
     )
 
     if shifter is True:

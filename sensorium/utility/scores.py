@@ -1,9 +1,9 @@
 import warnings
+
 import numpy as np
 import torch
-
 from neuralpredictors.measures.np_functions import corr, fev
-from neuralpredictors.training import eval_state, device_state
+from neuralpredictors.training import device_state, eval_state
 
 from .submission import get_data_filetree_loader
 
@@ -64,7 +64,13 @@ def model_predictions(model, dataloader, data_key, device="cpu"):
 
 
 def get_correlations(
-    model, dataloaders, tier=None, device="cpu", as_dict=False, per_neuron=True, **kwargs
+    model,
+    dataloaders,
+    tier=None,
+    device="cpu",
+    as_dict=False,
+    per_neuron=True,
+    **kwargs
 ):
     """
     Computes single-trial correlation between model prediction and true responses
@@ -83,18 +89,34 @@ def get_correlations(
     correlations = {}
     dl = dataloaders[tier] if tier is not None else dataloaders
     for k, v in dl.items():
-        target, output = model_predictions(
-            dataloader=v, model=model, data_key=k, device=device
-        )
-        correlations[k] = corr(target, output, axis=0)
-
-        if np.any(np.isnan(correlations[k])):
-            warnings.warn(
-                "{}% NaNs , NaNs will be set to Zero.".format(
-                    np.isnan(correlations[k]).mean() * 100
+        if tier == 'test':
+            if k not in ['27204-5-13', '26872-17-20']:
+                target, output = model_predictions(
+                    dataloader=v, model=model, data_key=k, device=device
                 )
+                correlations[k] = corr(target, output, axis=0)
+                #print(f'Corrleations for {k}: {correlations[k]}')
+                if np.any(np.isnan(correlations[k])):
+                    warnings.warn(
+                        "{}% NaNs , NaNs will be set to Zero.".format(
+                            np.isnan(correlations[k]).mean() * 100
+                        )
+                    )
+                correlations[k][np.isnan(correlations[k])] = 0
+        else:
+            target, output = model_predictions(
+                dataloader=v, model=model, data_key=k, device=device
             )
-        correlations[k][np.isnan(correlations[k])] = 0
+            correlations[k] = corr(target, output, axis=0)
+
+           # print(f'Corrleations for {k}: {correlations[k]}')
+            if np.any(np.isnan(correlations[k])):
+                warnings.warn(
+                    "{}% NaNs , NaNs will be set to Zero.".format(
+                        np.isnan(correlations[k]).mean() * 100
+                    )
+                )
+            correlations[k][np.isnan(correlations[k])] = 0
 
     if not as_dict:
         correlations = (
@@ -147,7 +169,15 @@ def get_signal_correlations(
     return correlations if per_neuron else correlations.mean()
 
 
-def get_fev(model, dataloaders, tier, device="cpu", per_neuron=True, fev_threshold=0.15, as_dict=False):
+def get_fev(
+    model,
+    dataloaders,
+    tier,
+    device="cpu",
+    per_neuron=True,
+    fev_threshold=0.15,
+    as_dict=False,
+):
     """
     Compute the fraction of explainable variance explained per neuron.
 
